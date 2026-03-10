@@ -10,22 +10,38 @@ WORKDIR /app
 FROM base AS dev
 RUN go install github.com/air-verse/air@latest
 EXPOSE 8080
-CMD ["air", "-c", "backend/.air.toml"]
+WORKDIR /app/apps/server
+CMD ["air", "-c", ".air.toml"]
+
+# Stage: dev-frontend — Vite dev server for development
+FROM oven/bun:alpine AS dev-frontend
+WORKDIR /app
+COPY package.json bun.lock* ./
+COPY apps/web/package.json apps/web/
+COPY apps/desktop/package.json apps/desktop/
+COPY apps/server/package.json apps/server/
+COPY packages/contracts/package.json packages/contracts/
+COPY packages/shared/package.json packages/shared/
+RUN bun install --frozen-lockfile
+COPY apps ./apps
+COPY packages ./packages
+EXPOSE 5173
+CMD ["sh", "-c", "bun install && bun run --cwd apps/web dev"]
 
 # Stage: test — test runner
 FROM base AS test
 ENV CGO_ENABLED=0
-COPY backend/go.mod backend/go.sum ./backend/
-RUN cd backend && go mod download
-COPY backend/ ./backend/
-CMD ["cd", "backend", "&&", "go", "test", "-v", "./..."]
+COPY apps/server/go.mod apps/server/go.sum ./apps/server/
+RUN cd apps/server && go mod download
+COPY apps/server/ ./apps/server/
+CMD ["cd", "apps/server", "&&", "go", "test", "-v", "./..."]
 
 # Stage: build — compile production binary
 FROM base AS build
-COPY backend/go.mod backend/go.sum ./backend/
-RUN cd backend && go mod download
-COPY backend/ ./backend/
-RUN cd backend && CGO_ENABLED=0 GOOS=linux go build -ldflags="-w -s" -o /app/main ./cmd/plum
+COPY apps/server/go.mod apps/server/go.sum ./apps/server/
+RUN cd apps/server && go mod download
+COPY apps/server/ ./apps/server/
+RUN cd apps/server && CGO_ENABLED=0 GOOS=linux go build -ldflags="-w -s" -o /app/main ./cmd/plum
 
 # Stage: production — minimal runtime image
 FROM alpine:${ALPINE_VERSION} AS production

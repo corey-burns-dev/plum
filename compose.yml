@@ -4,18 +4,19 @@ services:
       context: .
       dockerfile: Dockerfile
       target: dev
+    env_file:
+      - .env
     environment:
-      - PLUM_ADDR=:8080
-      - PLUM_DB_PATH=/data/plum.db
-      # Point the backend at the host TV library, mounted below.
-      - PLUM_TV_PATH=/tv
+      - PLUM_ADDR=${PLUM_ADDR:-:8080}
+      - PLUM_DATABASE_URL=/data/plum.db
+      - TMDB_API_KEY=${TMDB_API_KEY}
     volumes:
       - .:/app
       - plum_data:/data
-      # Mount your host TV library into the container so the Go process
-      # can see /home/cburns/Videos. Adjust the left side if you ever
-      # move your library.
-      - /home/cburns/Videos:/tv:ro
+      # Bind host folders straight to /tv, /movies, /music — add libraries with paths /tv, /movies, /music
+      - /home/cburns/Videos/tv:/tv:ro
+      - /home/cburns/Videos/movies:/movies:ro
+      - /home/cburns/Videos/music:/music:ro
     ports:
       - "8080:8080"
     healthcheck:
@@ -27,17 +28,17 @@ services:
 
   frontend:
     build:
-      context: ./frontend
+      context: .
       dockerfile: Dockerfile
-      target: dev
+      target: dev-frontend
     ports:
       - "5173:5173"
+    env_file:
+      - .env
     environment:
-      # Use the host-mapped backend port so the browser
-      # can reach the API directly from your machine.
-      - VITE_BACKEND_URL=http://localhost:8080
+      - VITE_BACKEND_URL=${VITE_BACKEND_URL:-http://localhost:8080}
     volumes:
-      - ./frontend:/app
+      - .:/app
       - /app/node_modules
     depends_on:
       - app

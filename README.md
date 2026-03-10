@@ -10,12 +10,21 @@ Plum is a lightweight, experimental media server and player suite inspired by pl
 - **Lightweight & Portable:** Uses SQLite for zero-configuration database management.
 - **Cross-Platform:** Built with Go and React to run anywhere.
 
+## 📁 Project Structure
+
+This project is organized as a monorepo using Bun workspaces:
+
+- `apps/server`: [Go](https://go.dev/) (Golang) backend for media management and transcoding.
+- `apps/web`: [React](https://react.dev/) / [Vite](https://vitejs.dev/) frontend for a seamless viewing experience.
+- `apps/desktop`: [Electron](https://www.electronjs.org/) (WIP) wrapper for native desktop experience.
+- `packages/contracts`: Shared TypeScript contracts and schemas using [Effect](https://effect.website/).
+- `packages/shared`: Shared runtime utilities for web and desktop.
+
 ## 🛠 Tech Stack
 
-- **Backend:** [Go](https://go.dev/) (Golang)
-- **Frontend:** [React](https://react.dev/), [TypeScript](https://www.typescriptlang.org/), [Vite](https://vitejs.dev/)
-- **Database:** [SQLite](https://sqlite.org/) (via `modernc.org/sqlite`)
-- **Communication:** RESTful API & WebSockets
+- **Backend:** Go, SQLite (via `modernc.org/sqlite`), REST, WebSockets.
+- **Frontend:** React, TypeScript, Vite, Effect.
+- **Monorepo:** Bun workspaces.
 
 ## 🚀 Getting Started
 
@@ -50,7 +59,7 @@ The frontend will be available at `http://localhost:5173` and the backend at `ht
 ### Backend Environment Variables
 
 - `PLUM_ADDR`: The address and port to listen on (default: `:8080`).
-- `PLUM_DB_PATH`: The file path for the SQLite database (default: `/data/plum.db` in Docker).
+- `PLUM_DATABASE_URL`: Path to the SQLite database file (default: `./data/plum.db`; in Docker use `/data/plum.db`).
 
 ### Frontend Environment Variables
 

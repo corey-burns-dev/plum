@@ -40,7 +40,8 @@ help:
 	@echo "  make clean       - 🧹 Remove containers, volumes, and temp files"
 
 dev:
-	# Rebuild images when definitions or dependencies change, then start attached.
+	# Remove volumes so each dev run starts with a clean DB (e.g. no "admin already exists").
+	$(DOCKER_COMPOSE) down -v
 	$(DOCKER_COMPOSE) up --build
 
 build:
@@ -72,22 +73,22 @@ ps:
 lint: lint-backend lint-frontend
 
 lint-backend:
-	cd backend && golangci-lint run
+	cd apps/server && golangci-lint run
 
 lint-frontend:
-	cd frontend && $(BUN) x oxlint
+	cd apps/web && $(BUN) run lint
 
 fmt: fmt-backend fmt-frontend
 
 fmt-backend:
-	cd backend && go fmt ./...
+	cd apps/server && go fmt ./...
 
 fmt-frontend:
-	cd frontend && $(BUN) x oxfmt
+	cd apps/web && $(BUN) run format
 
 test:
-	cd backend && go test -v ./...
+	cd apps/server && go test -v ./...
 
 clean:
 	$(DOCKER_COMPOSE) down -v
-	rm -rf backend/tmp backend/bin frontend/dist
+	rm -rf apps/server/tmp apps/server/bin apps/web/dist

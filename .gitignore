@@ -26,3 +26,6 @@ tmp/
 # Docker
 .dockerignore
 compose.override.yml
+node_modules
+apps/server/plum.db*
+apps/server/plum
