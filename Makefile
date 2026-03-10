@@ -40,13 +40,16 @@ help:
 	@echo "  make clean       - 🧹 Remove containers, volumes, and temp files"
 
 dev:
-	$(DOCKER_COMPOSE) up
+	# Rebuild images when definitions or dependencies change, then start attached.
+	$(DOCKER_COMPOSE) up --build
 
 build:
+	# Explicit rebuild of all images without starting containers.
 	$(DOCKER_COMPOSE) build
 
 up:
-	$(DOCKER_COMPOSE) up -d
+	# Start in background, rebuilding images if needed.
+	$(DOCKER_COMPOSE) up -d --build
 
 down:
 	$(DOCKER_COMPOSE) down

@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"log"
 	"net/http"
 	"os"
@@ -11,6 +12,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/go-chi/chi/v5"
 	_ "modernc.org/sqlite"
 
 	"plum/internal/db"
@@ -21,6 +23,7 @@ import (
 func main() {
 	addr := getEnv("PLUM_ADDR", ":8080")
 	dbPath := getEnv("PLUM_DB_PATH", "./plum.db")
+	tvPath := getEnv("PLUM_TV_PATH", "/home/cburns/Videos")
 
 	sqlDB, err := db.InitDB(dbPath)
 	if err != nil {
@@ -32,15 +35,24 @@ func main() {
 		log.Fatalf("seed sample: %v", err)
 	}
 
+	// Best-effort scan of the default TV library path so the UI is useful
+	// without any manual configuration. Errors are logged but do not prevent
+	// the server from starting.
+	if tvPath != "" {
+		added, err := db.HandleScanLibrary(context.Background(), sqlDB, tvPath, "tv")
+		if err != nil {
+			log.Printf("tv scan (%s): %v", tvPath, err)
+		} else if added > 0 {
+			log.Printf("tv scan (%s): added %d items", tvPath, added)
+		}
+	}
+
 	hub := ws.NewHub()
 	go hub.Run()
 
-	mux := http.NewServeMux()
-	registerRoutes(mux, sqlDB, hub)
-
 	srv := &http.Server{
 		Addr:         addr,
-		Handler:      mux,
+		Handler:      buildRouter(sqlDB, hub),
 		ReadTimeout:  15 * time.Second,
 		WriteTimeout: 15 * time.Second,
 	}
@@ -73,26 +85,53 @@ func getEnv(key, def string) string {
 	return def
 }
 
-func registerRoutes(mux *http.ServeMux, sqlDB *sql.DB, hub *ws.Hub) {
-	mux.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
+func buildRouter(sqlDB *sql.DB, hub *ws.Hub) http.Handler {
+	r := chi.NewRouter()
+
+	// simple CORS middleware
+	r.Use(func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Access-Control-Allow-Origin", "*")
+			w.Header().Set("Access-Control-Allow-Methods", "GET, POST, OPTIONS, PUT, DELETE")
+			w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization")
+			if r.Method == "OPTIONS" {
+				return
+			}
+			next.ServeHTTP(w, r)
+		})
+	})
+
+	r.Get("/health", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = w.Write([]byte(`{"status":"ok"}`))
 	})
 
-	mux.HandleFunc("/api/media", func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != http.MethodGet {
-			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
-			return
-		}
+	r.Get("/api/media", func(w http.ResponseWriter, r *http.Request) {
 		db.HandleListMedia(w, r, sqlDB)
 	})
 
-	mux.HandleFunc("/api/transcode/", func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != http.MethodPost {
-			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+	r.Post("/api/scan", func(w http.ResponseWriter, r *http.Request) {
+		var payload struct {
+			Path string `json:"path"`
+			Type string `json:"type"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+			http.Error(w, "invalid json", http.StatusBadRequest)
 			return
 		}
-		idStr := r.URL.Path[len("/api/transcode/"):]
+		added, err := db.HandleScanLibrary(r.Context(), sqlDB, payload.Path, payload.Type)
+		if err != nil {
+			http.Error(w, "scan error: "+err.Error(), http.StatusInternalServerError)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"added": added,
+		})
+	})
+
+	r.Post("/api/transcode/{id}", func(w http.ResponseWriter, r *http.Request) {
+		idStr := chi.URLParam(r, "id")
 		id, err := strconv.Atoi(idStr)
 		if err != nil {
 			http.Error(w, "invalid id", http.StatusBadRequest)
@@ -101,8 +140,26 @@ func registerRoutes(mux *http.ServeMux, sqlDB *sql.DB, hub *ws.Hub) {
 		transcoder.HandleStartTranscode(w, r, sqlDB, hub, id)
 	})
 
-	mux.HandleFunc("/ws", func(w http.ResponseWriter, r *http.Request) {
+	r.Get("/api/stream/{id}", func(w http.ResponseWriter, r *http.Request) {
+		idStr := chi.URLParam(r, "id")
+		id, err := strconv.Atoi(idStr)
+		if err != nil {
+			http.Error(w, "invalid id", http.StatusBadRequest)
+			return
+		}
+		if err := db.HandleStreamMedia(w, r, sqlDB, id); err != nil {
+			status := http.StatusInternalServerError
+			if err == db.ErrNotFound {
+				status = http.StatusNotFound
+			}
+			http.Error(w, err.Error(), status)
+		}
+	})
+
+	r.Get("/ws", func(w http.ResponseWriter, r *http.Request) {
 		ws.ServeWS(hub, w, r)
 	})
+
+	return r
 }
 

@@ -7,9 +7,15 @@ services:
     environment:
       - PLUM_ADDR=:8080
       - PLUM_DB_PATH=/data/plum.db
+      # Point the backend at the host TV library, mounted below.
+      - PLUM_TV_PATH=/tv
     volumes:
       - .:/app
       - plum_data:/data
+      # Mount your host TV library into the container so the Go process
+      # can see /home/cburns/Videos. Adjust the left side if you ever
+      # move your library.
+      - /home/cburns/Videos:/tv:ro
     ports:
       - "8080:8080"
     healthcheck:
@@ -27,7 +33,9 @@ services:
     ports:
       - "5173:5173"
     environment:
-      - VITE_BACKEND_URL=http://app:8080
+      # Use the host-mapped backend port so the browser
+      # can reach the API directly from your machine.
+      - VITE_BACKEND_URL=http://localhost:8080
     volumes:
       - ./frontend:/app
       - /app/node_modules

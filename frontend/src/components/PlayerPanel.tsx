@@ -1,4 +1,5 @@
 import type { MediaItem } from '../api'
+import { BASE_URL } from '../api'
 
 interface Props {
   selected?: MediaItem
@@ -21,6 +22,11 @@ export function PlayerPanel({ selected, wsConnected, lastEvent }: Props) {
           <div className="player-sub">
             {selected.type} · {Math.round(selected.duration)}s
           </div>
+          <video
+            className="player-video"
+            controls
+            src={`${BASE_URL || ''}/api/stream/${selected.id}`}
+          />
           <div className="player-event">
             {lastEvent || 'Idle · trigger a transcode to see updates.'}
           </div>
