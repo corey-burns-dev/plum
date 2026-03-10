@@ -1,0 +1,11 @@
+{
+  "name": "@plum/server",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "air",
+    "build": "go build -o plum ./cmd/plum/main.go",
+    "test": "go test ./..."
+  }
+}
