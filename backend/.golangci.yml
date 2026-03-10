@@ -1,0 +1,77 @@
+version: "2"
+
+run:
+  timeout: 5m
+  concurrency: 0
+  tests: true
+  modules-download-mode: readonly
+  relative-path-mode: cfg
+
+linters:
+  default: none
+  enable:
+    - revive
+    - errcheck
+    - govet
+    - ineffassign
+    - staticcheck
+    - unused
+    - misspell
+    - gosec
+    - bodyclose
+    - noctx
+    - errorlint
+    - gocritic
+    - unparam
+  settings:
+    govet:
+      enable:
+        - shadow
+    gosec:
+      severity: medium
+      confidence: medium
+    unparam:
+      check-exported: false
+    revive:
+      rules:
+        - name: redefines-builtin-id
+        - name: unreachable-code
+        - name: string-of-int
+        - name: atomic
+        - name: context-keys-type
+        - name: var-naming
+        - name: receiver-naming
+        - name: error-naming
+        - name: time-naming
+        - name: exported
+          arguments:
+            - sayRepetitiveInsteadOfStutters
+        - name: package-comments
+        - name: error-return
+        - name: error-strings
+        - name: errorf
+        - name: indent-error-flow
+        - name: blank-imports
+        - name: dot-imports
+        - name: empty-block
+        - name: if-return
+        - name: increment-decrement
+        - name: range
+        - name: superfluous-else
+        - name: unexported-return
+        - name: unused-parameter
+        - name: var-declaration
+        - name: context-as-argument
+  exclusions:
+    generated: strict
+    paths:
+      - vendor
+      - third_party
+      - testdata
+
+
+issues:
+  max-issues-per-linter: 0
+  max-same-issues: 0
+  new: false
+  fix: false

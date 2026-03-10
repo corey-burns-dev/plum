@@ -21,34 +21,40 @@ Plum is a lightweight, experimental media server and player suite inspired by pl
 
 ### Prerequisites
 
-- [Go](https://go.dev/doc/install) (1.21 or later)
-- [Node.js](https://nodejs.org/) (v20 or later)
-- [npm](https://docs.npmjs.com/downloading-and-installing-node-js-and-npm)
+- [Docker](https://docs.docker.com/get-docker/) & [Docker Compose](https://docs.docker.com/compose/install/)
+- [Bun](https://bun.sh/) (Optional, for local frontend development)
+- [Go](https://go.dev/) (Optional, for local backend development)
 
-### 1. Backend Setup
+### Quick Start with Docker
 
-```bash
-cd backend
-go run cmd/plum/main.go
-```
-The backend will start at `http://localhost:8080` by default and create a `plum.db` file in the current directory.
-
-### 2. Frontend Setup
+The easiest way to get started is using the provided `Makefile`:
 
 ```bash
-cd frontend
-npm install
-npm run dev
+# Start full stack in development mode (with hot-reloading)
+make dev
 ```
-The frontend will be available at `http://localhost:5173`.
+
+The frontend will be available at `http://localhost:5173` and the backend at `http://localhost:8080`.
+
+### Other Commands
+
+- `make build` - 🔨 Build all Docker images
+- `make up` - ⬆️  Start services in background
+- `make down` - ⬇️  Stop all services
+- `make lint` - 🔍 Lint both backend and frontend
+- `make fmt` - 🎨 Format both backend and frontend
+- `make test` - 🧪 Run backend tests
 
 ## ⚙️ Configuration
 
 ### Backend Environment Variables
+
 - `PLUM_ADDR`: The address and port to listen on (default: `:8080`).
-- `PLUM_DB_PATH`: The file path for the SQLite database (default: `./plum.db`).
+- `PLUM_DB_PATH`: The file path for the SQLite database (default: `/data/plum.db` in Docker).
 
 ### Frontend Environment Variables
+
+- `VITE_API_URL`: The API URL for the backend (default: `http://localhost:8080`).
 - `VITE_WS_URL`: The WebSocket URL for the backend (defaults to `ws://localhost:8080/ws` in development).
 
 ## 🗺 Roadmap
