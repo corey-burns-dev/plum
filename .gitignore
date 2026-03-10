@@ -1,0 +1,18 @@
+# Frontend
+frontend/node_modules/
+frontend/dist/
+frontend/dist-ssr/
+frontend/*.local
+
+# Backend
+backend/plum
+backend/*.db
+backend/*.db-journal
+
+# General
+.env
+.DS_Store
+*.log
+tmp/
+.vscode/
+.idea/
