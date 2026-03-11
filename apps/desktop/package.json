@@ -2,8 +2,8 @@
   "name": "@plum/desktop",
   "version": "0.1.0",
   "private": true,
-  "main": "src/main.ts",
   "type": "module",
+  "main": "src/main.ts",
   "scripts": {
     "dev": "electron .",
     "build": "electron-builder",

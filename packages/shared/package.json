@@ -8,10 +8,16 @@
   },
   "scripts": {
     "typecheck": "tsc --noEmit",
-    "lint": "oxlint",
-    "format": "oxfmt"
+    "lint": "bunx oxlint",
+    "format": "bunx oxfmt"
+  },
+  "dependencies": {
+    "@plum/contracts": "workspace:*",
+    "effect": "https://pkg.pr.new/Effect-TS/effect-smol/effect@8881a9b"
   },
   "devDependencies": {
+    "oxfmt": "^0.37.0",
+    "oxlint": "^1.52.0",
     "typescript": "^5.7.3"
   }
 }

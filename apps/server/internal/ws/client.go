@@ -103,4 +103,3 @@ func (c *Client) writeLoop() {
 		}
 	}
 }
-

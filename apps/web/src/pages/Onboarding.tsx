@@ -1,111 +1,111 @@
-import { useState } from 'react'
-import type { LibraryType } from '../api'
-import { createAdmin, createLibrary, scanLibraryById } from '../api'
-import { useAuthActions } from '../contexts/AuthContext'
+import { useState } from "react";
+import type { LibraryType } from "../api";
+import { createAdmin, createLibrary, scanLibraryById } from "../api";
+import { useAuthActions } from "../contexts/AuthContext";
 
-type Step = 'admin' | 'library'
+type Step = "admin" | "library";
 
 type AddedLibrary = {
-  id: number
-  name: string
-  type: LibraryType
-  path: string
-  addedCount: number
-  updatedCount: number
-  removedCount: number
-  unmatchedCount: number
-  skippedCount: number
-}
+  id: number;
+  name: string;
+  type: LibraryType;
+  path: string;
+  addedCount: number;
+  updatedCount: number;
+  removedCount: number;
+  unmatchedCount: number;
+  skippedCount: number;
+};
 
 type OnboardingProps = {
-  onGoToHome: () => void
-}
+  onGoToHome: () => void;
+};
 
 const LIBRARY_TYPE_OPTIONS: { value: LibraryType; label: string }[] = [
-  { value: 'tv', label: 'TV shows' },
-  { value: 'movie', label: 'Movies' },
-  { value: 'anime', label: 'Anime' },
-  { value: 'music', label: 'Music' },
-]
+  { value: "tv", label: "TV shows" },
+  { value: "movie", label: "Movies" },
+  { value: "anime", label: "Anime" },
+  { value: "music", label: "Music" },
+];
 
 const DEFAULT_LIBRARIES: { name: string; type: LibraryType; path: string }[] = [
-  { name: 'TV', type: 'tv', path: '/tv' },
-  { name: 'Movies', type: 'movie', path: '/movies' },
-  { name: 'Anime', type: 'anime', path: '/anime' },
-  { name: 'Music', type: 'music', path: '/music' },
-]
+  { name: "TV", type: "tv", path: "/tv" },
+  { name: "Movies", type: "movie", path: "/movies" },
+  { name: "Anime", type: "anime", path: "/anime" },
+  { name: "Music", type: "music", path: "/music" },
+];
 
 export function Onboarding({ onGoToHome }: OnboardingProps) {
-  const { refreshMe } = useAuthActions()
-  const [step, setStep] = useState<Step>('admin')
-  const [email, setEmail] = useState('')
-  const [password, setPassword] = useState('')
-  const [confirmPassword, setConfirmPassword] = useState('')
-  const [libraryType, setLibraryType] = useState<LibraryType>('tv')
-  const [libraryName, setLibraryName] = useState('')
-  const [libraryPath, setLibraryPath] = useState('')
-  const [addedLibraries, setAddedLibraries] = useState<AddedLibrary[]>([])
-  const [loading, setLoading] = useState(false)
-  const [addingDefaults, setAddingDefaults] = useState(false)
-  const [error, setError] = useState<string | null>(null)
+  const { refreshMe } = useAuthActions();
+  const [step, setStep] = useState<Step>("admin");
+  const [email, setEmail] = useState("");
+  const [password, setPassword] = useState("");
+  const [confirmPassword, setConfirmPassword] = useState("");
+  const [libraryType, setLibraryType] = useState<LibraryType>("tv");
+  const [libraryName, setLibraryName] = useState("");
+  const [libraryPath, setLibraryPath] = useState("");
+  const [addedLibraries, setAddedLibraries] = useState<AddedLibrary[]>([]);
+  const [loading, setLoading] = useState(false);
+  const [addingDefaults, setAddingDefaults] = useState(false);
+  const [error, setError] = useState<string | null>(null);
 
   const handleAdminSubmit = async (e: React.FormEvent) => {
-    e.preventDefault()
-    setError(null)
+    e.preventDefault();
+    setError(null);
     if (password.length < 10) {
-      setError('Password must be at least 10 characters.')
-      return
+      setError("Password must be at least 10 characters.");
+      return;
     }
     if (password !== confirmPassword) {
-      setError('Passwords do not match.')
-      return
+      setError("Passwords do not match.");
+      return;
     }
-    setLoading(true)
+    setLoading(true);
     try {
-      await createAdmin({ email: email.trim(), password })
-      setStep('library')
-      refreshMe().catch(() => {}) // update user/session in background; don't block transition
+      await createAdmin({ email: email.trim(), password });
+      setStep("library");
+      refreshMe().catch(() => {}); // update user/session in background; don't block transition
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Setup failed.')
+      setError(err instanceof Error ? err.message : "Setup failed.");
     } finally {
-      setLoading(false)
+      setLoading(false);
     }
-  }
+  };
 
   const handleQuickStartAdmin = async () => {
-    if (!import.meta.env.DEV) return
-    if (loading) return
+    if (!import.meta.env.DEV) return;
+    if (loading) return;
 
-    setError(null)
-    setLoading(true)
+    setError(null);
+    setLoading(true);
     try {
-      const quickEmail = 'admin@example.com'
-      const quickPassword = 'passwordpassword'
-      await createAdmin({ email: quickEmail, password: quickPassword })
-      setStep('library')
-      refreshMe().catch(() => {}) // update user/session in background; don't block transition
+      const quickEmail = "admin@example.com";
+      const quickPassword = "passwordpassword";
+      await createAdmin({ email: quickEmail, password: quickPassword });
+      setStep("library");
+      refreshMe().catch(() => {}); // update user/session in background; don't block transition
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Quick start failed.')
+      setError(err instanceof Error ? err.message : "Quick start failed.");
     } finally {
-      setLoading(false)
+      setLoading(false);
     }
-  }
+  };
 
   const handleAddLibrary = async (e: React.FormEvent) => {
-    e.preventDefault()
-    setError(null)
+    e.preventDefault();
+    setError(null);
     if (!libraryName.trim() || !libraryPath.trim()) {
-      setError('Library name and path are required.')
-      return
+      setError("Library name and path are required.");
+      return;
     }
-    setLoading(true)
+    setLoading(true);
     try {
       const lib = await createLibrary({
         name: libraryName.trim(),
         type: libraryType,
         path: libraryPath.trim(),
-      })
-      const result = await scanLibraryById(lib.id, { identify: false })
+      });
+      const result = await scanLibraryById(lib.id, { identify: false });
       setAddedLibraries((prev) => [
         ...prev,
         {
@@ -119,28 +119,28 @@ export function Onboarding({ onGoToHome }: OnboardingProps) {
           unmatchedCount: result.unmatched,
           skippedCount: result.skipped,
         },
-      ])
-      setLibraryName('')
-      setLibraryPath('')
+      ]);
+      setLibraryName("");
+      setLibraryPath("");
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Library or scan failed.')
+      setError(err instanceof Error ? err.message : "Library or scan failed.");
     } finally {
-      setLoading(false)
+      setLoading(false);
     }
-  }
+  };
 
   const handleAddDefaultLibraries = async () => {
-    setError(null)
-    setAddingDefaults(true)
+    setError(null);
+    setAddingDefaults(true);
     try {
-      const existingPaths = new Set(addedLibraries.map((l) => l.path))
+      const existingPaths = new Set(addedLibraries.map((l) => l.path));
       for (const def of DEFAULT_LIBRARIES) {
-        if (existingPaths.has(def.path)) continue
-        const lib = await createLibrary({ name: def.name, type: def.type, path: def.path })
-        let addedCount = 0
+        if (existingPaths.has(def.path)) continue;
+        const lib = await createLibrary({ name: def.name, type: def.type, path: def.path });
+        let addedCount = 0;
         try {
-          const result = await scanLibraryById(lib.id, { identify: false })
-          addedCount = result.added
+          const result = await scanLibraryById(lib.id, { identify: false });
+          addedCount = result.added;
         } catch {
           // Path may not exist (e.g. /anime not mounted); library is still created
         }
@@ -157,32 +157,32 @@ export function Onboarding({ onGoToHome }: OnboardingProps) {
             unmatchedCount: 0,
             skippedCount: 0,
           },
-        ])
-        existingPaths.add(def.path)
+        ]);
+        existingPaths.add(def.path);
       }
       if (existingPaths.size > 0) {
-        onGoToHome()
+        onGoToHome();
       }
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to add default libraries.')
+      setError(err instanceof Error ? err.message : "Failed to add default libraries.");
     } finally {
-      setAddingDefaults(false)
+      setAddingDefaults(false);
     }
-  }
+  };
 
   const handleFinishSetup = () => {
-    onGoToHome()
-  }
+    onGoToHome();
+  };
 
   return (
     <div className="auth-screen">
       <div className="onboarding-wizard">
         <div className="wizard-progress">
-          <span className={step === 'admin' ? 'active' : 'done'}>1. Admin</span>
-          <span className={step === 'library' ? 'active' : ''}>2. Library</span>
+          <span className={step === "admin" ? "active" : "done"}>1. Admin</span>
+          <span className={step === "library" ? "active" : ""}>2. Library</span>
         </div>
 
-        {step === 'admin' && (
+        {step === "admin" && (
           <div className="auth-card">
             <h1 className="auth-title">Create admin account</h1>
             <p className="auth-sub">Set up the first user for your Plum server.</p>
@@ -223,7 +223,7 @@ export function Onboarding({ onGoToHome }: OnboardingProps) {
               </label>
               {error && <p className="auth-error">{error}</p>}
               <button type="submit" className="auth-submit" disabled={loading}>
-                {loading ? 'Creating…' : 'Create admin'}
+                {loading ? "Creating…" : "Create admin"}
               </button>
               {import.meta.env.DEV && (
                 <button
@@ -239,20 +239,21 @@ export function Onboarding({ onGoToHome }: OnboardingProps) {
           </div>
         )}
 
-        {step === 'library' && (
+        {step === "library" && (
           <div className="auth-card">
             <h1 className="auth-title">Add libraries</h1>
             <p className="auth-sub">
-              Add at least one library and run a scan to continue. Choose a type, name the library, and set the folder path (e.g. /tv, /movies).
+              Add at least one library and run a scan to continue. Choose a type, name the library,
+              and set the folder path (e.g. /tv, /movies).
             </p>
-            <div className="onboarding-library-actions" style={{ marginBottom: '1rem' }}>
+            <div className="onboarding-library-actions" style={{ marginBottom: "1rem" }}>
               <button
                 type="button"
                 className="auth-submit secondary"
                 disabled={loading || addingDefaults}
                 onClick={handleAddDefaultLibraries}
               >
-                {addingDefaults ? 'Adding…' : 'Add default libraries (TV, Movies, Music, Anime)'}
+                {addingDefaults ? "Adding…" : "Add default libraries (TV, Movies, Music, Anime)"}
               </button>
             </div>
             <form onSubmit={handleAddLibrary} className="auth-form">
@@ -295,7 +296,7 @@ export function Onboarding({ onGoToHome }: OnboardingProps) {
               {error && <p className="auth-error">{error}</p>}
               <div className="onboarding-library-actions">
                 <button type="submit" className="auth-submit" disabled={loading || addingDefaults}>
-                  {loading ? 'Adding…' : 'Add library'}
+                  {loading ? "Adding…" : "Add library"}
                 </button>
                 <button
                   type="button"
@@ -313,7 +314,9 @@ export function Onboarding({ onGoToHome }: OnboardingProps) {
                 <ul className="onboarding-libraries-list">
                   {addedLibraries.map((lib) => (
                     <li key={lib.id}>
-                      <strong>{lib.name}</strong> ({lib.type}) — added {lib.addedCount}, updated {lib.updatedCount}, unmatched {lib.unmatchedCount}, skipped {lib.skippedCount}, removed {lib.removedCount}
+                      <strong>{lib.name}</strong> ({lib.type}) — added {lib.addedCount}, updated{" "}
+                      {lib.updatedCount}, unmatched {lib.unmatchedCount}, skipped {lib.skippedCount}
+                      , removed {lib.removedCount}
                     </li>
                   ))}
                 </ul>
@@ -321,8 +324,7 @@ export function Onboarding({ onGoToHome }: OnboardingProps) {
             )}
           </div>
         )}
-
       </div>
     </div>
-  )
+  );
 }

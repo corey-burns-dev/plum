@@ -69,4 +69,3 @@ func (h *Hub) Unregister(c *Client) {
 func (h *Hub) Close() {
 	close(h.broadcast)
 }
-

@@ -18,8 +18,8 @@ help:
 	@echo "$(BLUE)╚════════════════════════════════════════════════════════════════╝$(NC)"
 	@echo ""
 	@echo "$(GREEN)Development:$(NC)"
-	@echo "  make dev         - 🚀 Start full stack in development mode (fresh DB, no users/libraries)"
-	@echo "  make dev-clean  - 🧹 Same as dev: clean DB then start (onboarding from scratch)"
+	@echo "  make dev         - 🚀 Start full stack (keeps DB, sessions, and libraries across restarts)"
+	@echo "  make dev-clean  - 🧹 Wipe DB then start (onboarding from scratch)"
 	@echo "  make build      - 🔨 Build all Docker images"
 	@echo "  make up          - ⬆️  Start services in background"
 	@echo "  make down        - ⬇️  Stop all services"
@@ -41,11 +41,14 @@ help:
 	@echo "  make clean       - 🧹 Remove containers, volumes, and temp files"
 
 dev:
-	# Remove volumes so each dev run starts with a clean DB (e.g. no "admin already exists").
-	$(DOCKER_COMPOSE) down -v
+	# Stop containers but keep volumes so DB + sessions persist across restarts.
+	$(DOCKER_COMPOSE) down
 	$(DOCKER_COMPOSE) up --build
 
-dev-clean: dev
+dev-clean:
+	# Remove volumes for a fresh DB (onboarding from scratch).
+	$(DOCKER_COMPOSE) down -v
+	$(DOCKER_COMPOSE) up --build
 
 build:
 	# Explicit rebuild of all images without starting containers.

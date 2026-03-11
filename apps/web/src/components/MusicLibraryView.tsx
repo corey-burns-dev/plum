@@ -1,23 +1,28 @@
-import { useMemo, type ReactNode } from 'react'
-import type { MediaItem } from '../api'
-import { formatRuntime, groupMusicByAlbum, groupMusicByArtist, sortMusicTracks } from '../lib/musicGrouping'
-import { LibraryPosterGrid } from './LibraryPosterGrid'
+import { useMemo, type ReactNode } from "react";
+import type { MediaItem } from "../api";
+import {
+  formatRuntime,
+  groupMusicByAlbum,
+  groupMusicByArtist,
+  sortMusicTracks,
+} from "../lib/musicGrouping";
+import { LibraryPosterGrid } from "./LibraryPosterGrid";
 
 interface Props {
-  items: MediaItem[]
-  onPlayCollection: (items: MediaItem[], startItem?: MediaItem) => void
+  items: MediaItem[];
+  onPlayCollection: (items: MediaItem[], startItem?: MediaItem) => void;
 }
 
 export function MusicLibraryView({ items, onPlayCollection }: Props) {
-  const tracks = useMemo(() => sortMusicTracks(items), [items])
-  const albums = useMemo(() => groupMusicByAlbum(items), [items])
-  const artists = useMemo(() => groupMusicByArtist(items), [items])
+  const tracks = useMemo(() => sortMusicTracks(items), [items]);
+  const albums = useMemo(() => groupMusicByAlbum(items), [items]);
+  const artists = useMemo(() => groupMusicByArtist(items), [items]);
 
   return (
     <div className="music-library">
       <MusicSection
         title="Tracks"
-        count={`${tracks.length} track${tracks.length === 1 ? '' : 's'}`}
+        count={`${tracks.length} track${tracks.length === 1 ? "" : "s"}`}
       >
         <div className="music-track-list" role="list">
           {tracks.map((track) => (
@@ -28,13 +33,13 @@ export function MusicLibraryView({ items, onPlayCollection }: Props) {
               onClick={() => onPlayCollection(tracks, track)}
             >
               <span className="music-track-index">
-                {(track.track_number ?? 0) > 0 ? String(track.track_number).padStart(2, '0') : '•'}
+                {(track.track_number ?? 0) > 0 ? String(track.track_number).padStart(2, "0") : "•"}
               </span>
               <span className="music-track-main">
                 <span className="music-track-title">{track.title}</span>
                 <span className="music-track-meta">
-                  {track.artist || 'Unknown Artist'}
-                  {track.album ? ` • ${track.album}` : ''}
+                  {track.artist || "Unknown Artist"}
+                  {track.album ? ` • ${track.album}` : ""}
                 </span>
               </span>
               <span className="music-track-duration">{formatRuntime(track.duration)}</span>
@@ -45,14 +50,14 @@ export function MusicLibraryView({ items, onPlayCollection }: Props) {
 
       <MusicSection
         title="Albums"
-        count={`${albums.length} album${albums.length === 1 ? '' : 's'}`}
+        count={`${albums.length} album${albums.length === 1 ? "" : "s"}`}
       >
         <LibraryPosterGrid
           compact
           items={albums.map((album) => ({
             key: album.key,
             title: album.title,
-            subtitle: `${album.artist} • ${album.trackCount} tracks${album.year ? ` • ${album.year}` : ''}`,
+            subtitle: `${album.artist} • ${album.trackCount} tracks${album.year ? ` • ${album.year}` : ""}`,
             posterPath: album.posterPath,
             onClick: () => onPlayCollection(album.tracks, album.tracks[0]),
             onPlay: () => onPlayCollection(album.tracks, album.tracks[0]),
@@ -62,7 +67,7 @@ export function MusicLibraryView({ items, onPlayCollection }: Props) {
 
       <MusicSection
         title="Artists"
-        count={`${artists.length} artist${artists.length === 1 ? '' : 's'}`}
+        count={`${artists.length} artist${artists.length === 1 ? "" : "s"}`}
       >
         <LibraryPosterGrid
           compact
@@ -88,7 +93,7 @@ export function MusicLibraryView({ items, onPlayCollection }: Props) {
         />
       </div>
     </div>
-  )
+  );
 }
 
 function MusicSection({
@@ -96,9 +101,9 @@ function MusicSection({
   count,
   children,
 }: {
-  title: string
-  count: string
-  children: ReactNode
+  title: string;
+  count: string;
+  children: ReactNode;
 }) {
   return (
     <section className="music-section">
@@ -108,16 +113,10 @@ function MusicSection({
       </div>
       {children}
     </section>
-  )
+  );
 }
 
-function MusicPlaceholderSection({
-  title,
-  description,
-}: {
-  title: string
-  description: string
-}) {
+function MusicPlaceholderSection({ title, description }: { title: string; description: string }) {
   return (
     <section className="music-placeholder">
       <div className="music-section-header">
@@ -125,5 +124,5 @@ function MusicPlaceholderSection({
       </div>
       <p className="music-placeholder-copy">{description}</p>
     </section>
-  )
+  );
 }

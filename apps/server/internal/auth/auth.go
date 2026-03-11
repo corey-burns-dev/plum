@@ -39,4 +39,3 @@ func NewSessionID() (string, error) {
 func SessionLifetime() time.Duration {
 	return 30 * 24 * time.Hour
 }
-

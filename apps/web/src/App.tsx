@@ -1,24 +1,24 @@
-import { useState } from 'react'
-import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
-import { BrowserRouter, Route, Routes } from 'react-router-dom'
-import { AuthProvider, useAuthActions, useAuthState } from './contexts/AuthContext'
-import { IdentifyQueueProvider } from './contexts/IdentifyQueueContext'
-import { PlayerProvider } from './contexts/PlayerContext'
-import { MainLayout } from './components/MainLayout'
-import { Home } from './pages/Home'
-import { Login } from './pages/Login'
-import { Onboarding } from './pages/Onboarding'
-import { Settings } from './pages/Settings'
-import { ShowDetail } from './pages/ShowDetail'
-import './App.css'
+import { useState } from "react";
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { BrowserRouter, Route, Routes } from "react-router-dom";
+import { AuthProvider, useAuthActions, useAuthState } from "./contexts/AuthContext";
+import { IdentifyQueueProvider } from "./contexts/IdentifyQueueContext";
+import { PlayerProvider } from "./contexts/PlayerContext";
+import { MainLayout } from "./components/MainLayout";
+import { Home } from "./pages/Home";
+import { Login } from "./pages/Login";
+import { Onboarding } from "./pages/Onboarding";
+import { Settings } from "./pages/Settings";
+import { ShowDetail } from "./pages/ShowDetail";
+import "./App.css";
 
 function AppRouter({ queryClient }: { queryClient: QueryClient }) {
-  const { hasAdmin, user, loading } = useAuthState()
-  const { refreshSetupStatus } = useAuthActions()
+  const { hasAdmin, user, loading } = useAuthState();
+  const { refreshSetupStatus } = useAuthActions();
 
   const handleGoToHome = () => {
-    refreshSetupStatus().catch(() => {})
-  }
+    refreshSetupStatus().catch(() => {});
+  };
 
   if (loading) {
     return (
@@ -27,15 +27,15 @@ function AppRouter({ queryClient }: { queryClient: QueryClient }) {
           <p className="auth-muted">Loading…</p>
         </div>
       </div>
-    )
+    );
   }
 
   if (!hasAdmin) {
-    return <Onboarding onGoToHome={handleGoToHome} />
+    return <Onboarding onGoToHome={handleGoToHome} />;
   }
 
   if (!user) {
-    return <Login />
+    return <Login />;
   }
 
   return (
@@ -55,7 +55,7 @@ function AppRouter({ queryClient }: { queryClient: QueryClient }) {
         </IdentifyQueueProvider>
       </BrowserRouter>
     </QueryClientProvider>
-  )
+  );
 }
 
 function App() {
@@ -65,14 +65,14 @@ function App() {
         defaultOptions: {
           queries: { staleTime: 60_000 },
         },
-      })
-  )
+      }),
+  );
 
   return (
     <AuthProvider>
       <AppRouter queryClient={queryClient} />
     </AuthProvider>
-  )
+  );
 }
 
-export default App
+export default App;

@@ -1,126 +1,156 @@
-import { useCallback, useEffect, useMemo, useRef, useState, type MouseEvent as ReactMouseEvent } from 'react'
-import { useNavigate, useParams } from 'react-router-dom'
-import type { Library } from '../api'
-import { IdentifyShowDialog } from '../components/IdentifyShowDialog'
-import { LibraryPosterGrid } from '../components/LibraryPosterGrid'
-import { MusicLibraryView } from '../components/MusicLibraryView'
-import { useIdentifyQueue, type IdentifyLibraryPhase } from '../contexts/IdentifyQueueContext'
-import { usePlayer } from '../contexts/PlayerContext'
-import type { ShowGroup } from '../lib/showGrouping'
-import { groupMediaByShow } from '../lib/showGrouping'
-import { useLibraryMedia, useLibraries, useRefreshShow } from '../queries'
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type MouseEvent as ReactMouseEvent,
+} from "react";
+import { useNavigate, useParams } from "react-router-dom";
+import type { Library } from "../api";
+import { IdentifyShowDialog } from "../components/IdentifyShowDialog";
+import { LibraryPosterGrid } from "../components/LibraryPosterGrid";
+import { MusicLibraryView } from "../components/MusicLibraryView";
+import { useIdentifyQueue, type IdentifyLibraryPhase } from "../contexts/IdentifyQueueContext";
+import { usePlayer } from "../contexts/PlayerContext";
+import type { ShowGroup } from "../lib/showGrouping";
+import { groupMediaByShow } from "../lib/showGrouping";
+import { useLibraryMedia, useLibraries, useRefreshShow } from "../queries";
 
-const isTVOrAnime = (lib: Library) => lib.type === 'tv' || lib.type === 'anime'
-const IDENTIFY_POLL_INTERVAL_MS = 5_000
+const isTVOrAnime = (lib: Library) => lib.type === "tv" || lib.type === "anime";
+const IDENTIFY_POLL_INTERVAL_MS = 5_000;
 
-const hasProviderMatch = (tmdbId?: number, tvdbId?: string) => Boolean(tmdbId && tmdbId > 0) || Boolean(tvdbId)
-const isExplicitlyUnmatched = (matchStatus?: string) => matchStatus === 'local' || matchStatus === 'unmatched'
+const hasProviderMatch = (tmdbId?: number, tvdbId?: string) =>
+  Boolean(tmdbId && tmdbId > 0) || Boolean(tvdbId);
+const isExplicitlyUnmatched = (matchStatus?: string) =>
+  matchStatus === "local" || matchStatus === "unmatched";
 
 function canShowFailureState(identifyPhase: IdentifyLibraryPhase | undefined, isFetching: boolean) {
-  return identifyPhase === 'identify-failed' || (identifyPhase === 'complete' && !isFetching)
+  return identifyPhase === "identify-failed" || (identifyPhase === "complete" && !isFetching);
 }
 
-function shouldDeferIncompleteCard(identifyPhase: IdentifyLibraryPhase | undefined) {
-  return identifyPhase === 'queued' || identifyPhase === 'identifying'
+function shouldDeferIncompleteCard(
+  identifyPhase: IdentifyLibraryPhase | undefined,
+  shouldRevealSearchingCards: boolean,
+) {
+  return (
+    identifyPhase === "queued" || (identifyPhase === "identifying" && !shouldRevealSearchingCards)
+  );
 }
 
 export function Home() {
-  const { libraryId: libraryIdParam } = useParams()
-  const navigate = useNavigate()
-  const { playMovie, playMusicCollection, playShowGroup } = usePlayer()
-  const { activeLibraryId, getLibraryPhase, queueLibraryIdentify } = useIdentifyQueue()
+  const { libraryId: libraryIdParam } = useParams();
+  const navigate = useNavigate();
+  const { playMovie, playMusicCollection, playShowGroup } = usePlayer();
+  const { getLibraryPhase, queueLibraryIdentify } = useIdentifyQueue();
   const {
     data: libraries = [],
     isLoading: loadingLibs,
     error: loadLibsError,
     refetch: refetchLibraries,
-  } = useLibraries()
+  } = useLibraries();
   const selectedLibraryId = useMemo(() => {
-    const id = libraryIdParam ? parseInt(libraryIdParam, 10) : null
-    if (id != null && libraries.some((library) => library.id === id)) return id
-    return libraries[0]?.id ?? null
-  }, [libraryIdParam, libraries])
-  const selectedLibraryIdentifyPhase = getLibraryPhase(selectedLibraryId)
+    const id = libraryIdParam ? parseInt(libraryIdParam, 10) : null;
+    if (id != null && libraries.some((library) => library.id === id)) return id;
+    return libraries[0]?.id ?? null;
+  }, [libraryIdParam, libraries]);
+  const selectedLibraryIdentifyPhase = getLibraryPhase(selectedLibraryId);
   const selectedLibraryPollInterval =
     selectedLibraryId != null &&
-    activeLibraryId === selectedLibraryId &&
-    (selectedLibraryIdentifyPhase === 'identifying' || selectedLibraryIdentifyPhase === 'soft-reveal')
+    (selectedLibraryIdentifyPhase === "identifying" ||
+      selectedLibraryIdentifyPhase === "soft-reveal")
       ? IDENTIFY_POLL_INTERVAL_MS
-      : false
+      : false;
   const {
     data: selectedItems = [],
     isFetching: selectedFetching,
     isLoading: selectedLoading,
     error: selectedError,
     refetch: refetchLibraryMedia,
-  } = useLibraryMedia(selectedLibraryId, { refetchInterval: selectedLibraryPollInterval })
-  const refreshShowMutation = useRefreshShow()
-  const selectedLib = libraries.find((library) => library.id === selectedLibraryId)
+  } = useLibraryMedia(selectedLibraryId, { refetchInterval: selectedLibraryPollInterval });
+  const refreshShowMutation = useRefreshShow();
+  const selectedLib = libraries.find((library) => library.id === selectedLibraryId);
 
-  const [contextMenu, setContextMenu] = useState<{ x: number; y: number; group: ShowGroup } | null>(null)
-  const [identifyGroup, setIdentifyGroup] = useState<ShowGroup | null>(null)
-  const contextMenuRef = useRef<HTMLDivElement>(null)
-  const closeContextMenu = useCallback(() => setContextMenu(null), [])
+  const [contextMenu, setContextMenu] = useState<{ x: number; y: number; group: ShowGroup } | null>(
+    null,
+  );
+  const [identifyGroup, setIdentifyGroup] = useState<ShowGroup | null>(null);
+  const contextMenuRef = useRef<HTMLDivElement>(null);
+  const closeContextMenu = useCallback(() => setContextMenu(null), []);
 
   useEffect(() => {
-    if (!contextMenu) return
+    if (!contextMenu) return;
     const onMouseDown = (event: MouseEvent) => {
-      if (contextMenuRef.current?.contains(event.target as Node)) return
-      closeContextMenu()
-    }
-    document.addEventListener('mousedown', onMouseDown)
-    return () => document.removeEventListener('mousedown', onMouseDown)
-  }, [contextMenu, closeContextMenu])
+      if (contextMenuRef.current?.contains(event.target as Node)) return;
+      closeContextMenu();
+    };
+    document.addEventListener("mousedown", onMouseDown);
+    return () => document.removeEventListener("mousedown", onMouseDown);
+  }, [contextMenu, closeContextMenu]);
 
   useEffect(() => {
-    if (libraryIdParam != null || libraries.length === 0) return
-    navigate(`/library/${libraries[0].id}`, { replace: true })
-  }, [libraryIdParam, libraries, navigate])
+    if (libraryIdParam != null || libraries.length === 0) return;
+    navigate(`/library/${libraries[0].id}`, { replace: true });
+  }, [libraryIdParam, libraries, navigate]);
 
-  const selectedLibraryCanShowFailure = canShowFailureState(selectedLibraryIdentifyPhase, selectedFetching)
-  const deferIncompleteCards = shouldDeferIncompleteCard(selectedLibraryIdentifyPhase)
-  const isSoftRevealPhase = selectedLibraryIdentifyPhase === 'soft-reveal'
+  const selectedLibraryCanShowFailure = canShowFailureState(
+    selectedLibraryIdentifyPhase,
+    selectedFetching,
+  );
+  const hasIdentifyProgress = selectedItems.some(
+    (item) => item.match_status === "identified" || hasProviderMatch(item.tmdb_id, item.tvdb_id),
+  );
+  const shouldRevealSearchingCards =
+    selectedLibraryIdentifyPhase === "soft-reveal" ||
+    (selectedLibraryIdentifyPhase === "identifying" && hasIdentifyProgress);
+  const deferIncompleteCards = shouldDeferIncompleteCard(
+    selectedLibraryIdentifyPhase,
+    shouldRevealSearchingCards,
+  );
 
   const showGroups = useMemo(
     () => (selectedLib && isTVOrAnime(selectedLib) ? groupMediaByShow(selectedItems) : []),
     [selectedItems, selectedLib],
-  )
+  );
 
   const showCardState = useMemo(() => {
-    const deferredGroups: ShowGroup[] = []
+    const deferredGroups: ShowGroup[] = [];
     const visibleCards = showGroups.flatMap((group) => {
       const hasMatchedEpisode = group.episodes.some(
         (episode) =>
-          episode.match_status === 'identified' || hasProviderMatch(episode.tmdb_id, episode.tvdb_id),
-      )
+          episode.match_status === "identified" ||
+          hasProviderMatch(episode.tmdb_id, episode.tvdb_id),
+      );
       const isIncomplete =
-        group.unmatchedCount > 0 || group.localCount > 0 || (!group.posterPath && hasMatchedEpisode)
+        group.unmatchedCount > 0 ||
+        group.localCount > 0 ||
+        (!group.posterPath && hasMatchedEpisode);
       if (isIncomplete && deferIncompleteCards) {
-        deferredGroups.push(group)
-        return []
+        deferredGroups.push(group);
+        return [];
       }
 
       return [
         {
           key: group.showKey,
           title: group.showTitle,
-          subtitle: `${group.episodes.length} episode${group.episodes.length === 1 ? '' : 's'}${group.unmatchedCount > 0 ? ` • ${group.unmatchedCount} unmatched` : group.localCount > 0 ? ` • ${group.localCount} local` : ''}`,
+          subtitle: `${group.episodes.length} episode${group.episodes.length === 1 ? "" : "s"}${group.unmatchedCount > 0 ? ` • ${group.unmatchedCount} unmatched` : group.localCount > 0 ? ` • ${group.localCount} local` : ""}`,
           posterPath: group.posterPath,
           cardState:
-            isIncomplete && isSoftRevealPhase
-              ? 'identifying'
+            isIncomplete && shouldRevealSearchingCards
+              ? "identifying"
               : isIncomplete && selectedLibraryCanShowFailure
-                ? 'identify-failed'
-                : 'default',
+                ? "identify-failed"
+                : "default",
           statusLabel:
-            isIncomplete && isSoftRevealPhase
-              ? 'Identifying…'
+            isIncomplete && shouldRevealSearchingCards
+              ? "Searching…"
               : isIncomplete && selectedLibraryCanShowFailure
                 ? "Couldn't match automatically"
                 : undefined,
           statusActionLabel:
             isIncomplete && selectedLibraryCanShowFailure && selectedLibraryId != null
-              ? 'Identify manually'
+              ? "Identify manually"
               : undefined,
           onStatusAction:
             isIncomplete && selectedLibraryCanShowFailure && selectedLibraryId != null
@@ -129,34 +159,37 @@ export function Home() {
           href: `/library/${selectedLibraryId}/show/${encodeURIComponent(group.showKey)}`,
           onPlay: () => playShowGroup(group.episodes),
           onContextMenu: (event: ReactMouseEvent<HTMLDivElement>) => {
-            event.preventDefault()
-            setContextMenu({ x: event.clientX, y: event.clientY, group })
+            event.preventDefault();
+            setContextMenu({ x: event.clientX, y: event.clientY, group });
           },
         },
-      ]
-    })
-    return { deferredCount: deferredGroups.length, visibleCards }
+      ];
+    });
+    return { deferredCount: deferredGroups.length, visibleCards };
   }, [
     deferIncompleteCards,
-    isSoftRevealPhase,
     playShowGroup,
+    shouldRevealSearchingCards,
     selectedLibraryCanShowFailure,
     selectedLibraryId,
     showGroups,
-  ])
+  ]);
 
   const movieCardState = useMemo(() => {
-    let deferredCount = 0
+    let deferredCount = 0;
     const visibleCards = selectedItems.flatMap((item) => {
-      const year = item.release_date?.split('-')[0] || item.title.match(/\((\d{4})\)$/)?.[1] || 'Unknown year'
-      const status = item.match_status && item.match_status !== 'identified' ? ` • ${item.match_status}` : ''
-      const rating = item.vote_average ? ` • ${item.vote_average.toFixed(1)}` : ''
+      const year =
+        item.release_date?.split("-")[0] || item.title.match(/\((\d{4})\)$/)?.[1] || "Unknown year";
+      const status =
+        item.match_status && item.match_status !== "identified" ? ` • ${item.match_status}` : "";
+      const rating = item.vote_average ? ` • ${item.vote_average.toFixed(1)}` : "";
       const isIncomplete =
         isExplicitlyUnmatched(item.match_status) ||
-        (!item.poster_path && (item.match_status === 'identified' || hasProviderMatch(item.tmdb_id, item.tvdb_id)))
+        (!item.poster_path &&
+          (item.match_status === "identified" || hasProviderMatch(item.tmdb_id, item.tvdb_id)));
       if (isIncomplete && deferIncompleteCards) {
-        deferredCount += 1
-        return []
+        deferredCount += 1;
+        return [];
       }
 
       return [
@@ -166,20 +199,20 @@ export function Home() {
           subtitle: `${year}${rating}${status}`,
           posterPath: item.poster_path,
           cardState:
-            isIncomplete && isSoftRevealPhase
-              ? 'identifying'
+            isIncomplete && shouldRevealSearchingCards
+              ? "identifying"
               : isIncomplete && selectedLibraryCanShowFailure
-                ? 'identify-failed'
-                : 'default',
+                ? "identify-failed"
+                : "default",
           statusLabel:
-            isIncomplete && isSoftRevealPhase
-              ? 'Identifying…'
+            isIncomplete && shouldRevealSearchingCards
+              ? "Searching…"
               : isIncomplete && selectedLibraryCanShowFailure
                 ? "Couldn't match automatically"
                 : undefined,
           statusActionLabel:
             isIncomplete && selectedLibraryCanShowFailure && selectedLibraryId != null
-              ? 'Retry identify'
+              ? "Retry identify"
               : undefined,
           onStatusAction:
             isIncomplete && selectedLibraryCanShowFailure && selectedLibraryId != null
@@ -192,42 +225,42 @@ export function Home() {
           onClick: () => playMovie(item),
           onPlay: () => playMovie(item),
         },
-      ]
-    })
+      ];
+    });
 
-    return { deferredCount, visibleCards }
+    return { deferredCount, visibleCards };
   }, [
     deferIncompleteCards,
-    isSoftRevealPhase,
     playMovie,
     queueLibraryIdentify,
     selectedItems,
+    shouldRevealSearchingCards,
     selectedLibraryCanShowFailure,
     selectedLibraryId,
-  ])
+  ]);
 
   const deferredCardCount =
-    selectedLib == null || selectedLib.type === 'music'
+    selectedLib == null || selectedLib.type === "music"
       ? 0
       : isTVOrAnime(selectedLib)
         ? showCardState.deferredCount
-        : selectedLib.type === 'movie'
+        : selectedLib.type === "movie"
           ? movieCardState.deferredCount
-          : 0
+          : 0;
   const visibleCardCount =
-    selectedLib == null || selectedLib.type === 'music'
+    selectedLib == null || selectedLib.type === "music"
       ? 0
       : isTVOrAnime(selectedLib)
         ? showCardState.visibleCards.length
-        : selectedLib.type === 'movie'
+        : selectedLib.type === "movie"
           ? movieCardState.visibleCards.length
-          : 0
+          : 0;
   const showIdentifyPlaceholder =
     selectedLib != null &&
-    selectedLib.type !== 'music' &&
+    selectedLib.type !== "music" &&
     deferredCardCount > 0 &&
     visibleCardCount === 0 &&
-    (selectedLibraryIdentifyPhase === 'queued' || selectedLibraryIdentifyPhase === 'identifying')
+    (selectedLibraryIdentifyPhase === "queued" || selectedLibraryIdentifyPhase === "identifying");
 
   return (
     <>
@@ -235,7 +268,7 @@ export function Home() {
         <p className="text-sm text-[var(--plum-muted)]">Loading libraries…</p>
       ) : loadLibsError ? (
         <p className="text-sm text-[var(--plum-muted)]">
-          Failed to load libraries: {loadLibsError.message}{' '}
+          Failed to load libraries: {loadLibsError.message}{" "}
           <button
             type="button"
             className="text-[var(--plum-accent)] hover:underline"
@@ -256,7 +289,7 @@ export function Home() {
                 <p className="text-sm text-[var(--plum-muted)]">Loading…</p>
               ) : selectedError ? (
                 <p className="text-sm text-[var(--plum-muted)]">
-                  {selectedError.message}{' '}
+                  {selectedError.message}{" "}
                   <button
                     type="button"
                     className="text-[var(--plum-accent)] hover:underline"
@@ -271,7 +304,7 @@ export function Home() {
                 <p className="text-sm text-[var(--plum-muted)]">Identifying library…</p>
               ) : isTVOrAnime(selectedLib) ? (
                 <LibraryPosterGrid items={showCardState.visibleCards} />
-              ) : selectedLib.type === 'movie' ? (
+              ) : selectedLib.type === "movie" ? (
                 <LibraryPosterGrid items={movieCardState.visibleCards} />
               ) : (
                 <MusicLibraryView items={selectedItems} onPlayCollection={playMusicCollection} />
@@ -289,7 +322,7 @@ export function Home() {
                       refreshShowMutation.mutate(
                         { libraryId: selectedLibraryId, showKey: contextMenu.group.showKey },
                         { onSettled: closeContextMenu },
-                      )
+                      );
                     }}
                     disabled={refreshShowMutation.isPending}
                   >
@@ -301,8 +334,8 @@ export function Home() {
                     onClick={() => {
                       navigate(
                         `/library/${selectedLibraryId}/show/${encodeURIComponent(contextMenu.group.showKey)}`,
-                      )
-                      closeContextMenu()
+                      );
+                      closeContextMenu();
                     }}
                   >
                     Edit show
@@ -311,8 +344,8 @@ export function Home() {
                     type="button"
                     className="w-full px-3 py-2 text-left text-sm hover:bg-[var(--plum-bg)]"
                     onClick={() => {
-                      setIdentifyGroup(contextMenu.group)
-                      closeContextMenu()
+                      setIdentifyGroup(contextMenu.group);
+                      closeContextMenu();
                     }}
                   >
                     Identify…
@@ -334,5 +367,5 @@ export function Home() {
         </>
       )}
     </>
-  )
+  );
 }

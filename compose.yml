@@ -11,6 +11,8 @@ services:
       - PLUM_DATABASE_URL=/data/plum.db
       - TMDB_API_KEY=${TMDB_API_KEY}
       - TVDB_API_KEY=${TVDB_API_KEY}
+    devices:
+      - /dev/dri:/dev/dri
     volumes:
       - .:/app
       - plum_data:/data
@@ -43,7 +45,8 @@ services:
       - .:/app
       - /app/node_modules
     depends_on:
-      - app
+      app:
+        condition: service_healthy
 
 volumes:
   plum_data:

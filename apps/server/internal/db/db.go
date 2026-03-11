@@ -281,6 +281,12 @@ CREATE TABLE IF NOT EXISTS embedded_subtitles (
   title TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_embedded_subtitles_media_id ON embedded_subtitles(media_id);
+
+CREATE TABLE IF NOT EXISTS app_settings (
+  key TEXT PRIMARY KEY,
+  value TEXT NOT NULL,
+  updated_at DATETIME NOT NULL
+);
 `
 	if _, err := db.Exec(schema); err != nil {
 		return err
@@ -472,7 +478,8 @@ type IdentificationRow struct {
 	Episode int
 }
 
-// ListIdentifiableByLibrary returns all non-music media rows in the library for identification or repair.
+// ListIdentifiableByLibrary returns non-music media rows that still need identification
+// or metadata repair (for example, missing TMDB IDs or poster art).
 func ListIdentifiableByLibrary(db *sql.DB, libraryID int) ([]IdentificationRow, error) {
 	var typ string
 	if err := db.QueryRow(`SELECT type FROM libraries WHERE id = ?`, libraryID).Scan(&typ); err != nil {
@@ -489,12 +496,22 @@ func ListIdentifiableByLibrary(db *sql.DB, libraryID int) ([]IdentificationRow, 
 	var args []interface{}
 	if table == "tv_episodes" || table == "anime_episodes" {
 		q = `SELECT m.id, m.title, m.path, COALESCE(m.season, 0), COALESCE(m.episode, 0) FROM ` + table + ` m
-WHERE m.library_id = ?`
-		args = []interface{}{libraryID}
+WHERE m.library_id = ?
+  AND (
+    COALESCE(m.match_status, '') != ? OR
+    COALESCE(m.tmdb_id, 0) = 0 OR
+    COALESCE(m.poster_path, '') = ''
+  )`
+		args = []interface{}{libraryID, MatchStatusIdentified}
 	} else {
 		q = `SELECT m.id, m.title, m.path FROM ` + table + ` m
-WHERE m.library_id = ?`
-		args = []interface{}{libraryID}
+WHERE m.library_id = ?
+  AND (
+    COALESCE(m.match_status, '') != ? OR
+    COALESCE(m.tmdb_id, 0) = 0 OR
+    COALESCE(m.poster_path, '') = ''
+  )`
+		args = []interface{}{libraryID, MatchStatusIdentified}
 	}
 	rows, err := db.Query(q, args...)
 	if err != nil {

@@ -108,6 +108,7 @@ func buildRouter(sqlDB *sql.DB, hub *ws.Hub, pipeline *metadata.Pipeline, thumbD
 
 	authHandler := &httpapi.AuthHandler{DB: sqlDB}
 	libHandler := &httpapi.LibraryHandler{DB: sqlDB, Meta: pipeline, Series: pipeline, Pipeline: pipeline}
+	transcodingSettingsHandler := &httpapi.TranscodingSettingsHandler{DB: sqlDB}
 
 	r.Get("/health", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
@@ -122,6 +123,12 @@ func buildRouter(sqlDB *sql.DB, hub *ws.Hub, pipeline *metadata.Pipeline, thumbD
 
 	r.Group(func(protected chi.Router) {
 		protected.Use(httpapi.RequireAuth)
+
+		protected.Group(func(admin chi.Router) {
+			admin.Use(httpapi.RequireAdmin)
+			admin.Get("/api/settings/transcoding", transcodingSettingsHandler.Get)
+			admin.Put("/api/settings/transcoding", transcodingSettingsHandler.Put)
+		})
 
 		protected.Post("/api/libraries", libHandler.CreateLibrary)
 		protected.Get("/api/libraries", libHandler.ListLibraries)
@@ -145,6 +152,9 @@ func buildRouter(sqlDB *sql.DB, hub *ws.Hub, pipeline *metadata.Pipeline, thumbD
 				return
 			}
 			transcoder.HandleStartTranscode(w, r, sqlDB, hub, id)
+		})
+		protected.Delete("/api/transcode", func(w http.ResponseWriter, r *http.Request) {
+			transcoder.HandleCancelTranscode(w, r)
 		})
 		protected.Get("/api/stream/{id}", func(w http.ResponseWriter, r *http.Request) {
 			idStr := chi.URLParam(r, "id")

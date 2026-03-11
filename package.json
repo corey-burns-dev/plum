@@ -12,8 +12,8 @@
     "dev:server": "bun run --cwd apps/server dev",
     "dev:desktop": "bun run --cwd apps/desktop dev",
     "build": "bun run --cwd apps/web build",
-    "lint": "bun run --cwd apps/web lint && bun run --cwd apps/desktop lint",
-    "format": "bun run --cwd apps/web format && bun run --cwd apps/desktop format",
+    "lint": "bun run --cwd apps/web lint && bun run --cwd apps/desktop lint && bun run --cwd packages/shared lint && bun run --cwd packages/contracts lint",
+    "format": "bun run --cwd apps/web format && bun run --cwd apps/desktop format && bun run --cwd packages/shared format && bun run --cwd packages/contracts format",
     "typecheck": "bun run --cwd apps/web typecheck && bun run --cwd apps/desktop typecheck && bun run --cwd packages/shared typecheck && bun run --cwd packages/contracts typecheck"
   },
   "devDependencies": {

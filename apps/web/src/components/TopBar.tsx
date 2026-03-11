@@ -1,18 +1,18 @@
-import { Link } from 'react-router-dom'
-import { useAuthActions, useAuthState } from '@/contexts/AuthContext'
-import { Button } from '@/components/ui/button'
-import { Input } from '@/components/ui/input'
+import { Link } from "react-router-dom";
+import { useAuthActions, useAuthState } from "@/contexts/AuthContext";
+import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
 import {
   DropdownMenu,
   DropdownMenuContent,
   DropdownMenuItem,
   DropdownMenuTrigger,
-} from '@/components/ui/dropdown-menu'
-import { Search, Settings, User } from 'lucide-react'
+} from "@/components/ui/dropdown-menu";
+import { Search, Settings, User } from "lucide-react";
 
 export function TopBar() {
-  const { user } = useAuthState()
-  const { logout } = useAuthActions()
+  const { user } = useAuthState();
+  const { logout } = useAuthActions();
 
   return (
     <header className="sticky top-0 z-40 flex h-14 shrink-0 items-center gap-4 border-b border-[var(--plum-border)] bg-[var(--plum-panel)]/80 px-4 backdrop-blur-md">
@@ -25,7 +25,10 @@ export function TopBar() {
           className="size-8 rounded-full bg-[var(--plum-accent)] shadow-[0_0_20px_var(--plum-accent-soft)]"
           aria-hidden
         />
-        <span className="text-lg font-semibold tracking-tight text-[var(--plum-text)]" style={{ fontFamily: 'var(--font-display)' }}>
+        <span
+          className="text-lg font-semibold tracking-tight text-[var(--plum-text)]"
+          style={{ fontFamily: "var(--font-display)" }}
+        >
           Plum
         </span>
       </Link>
@@ -42,18 +45,11 @@ export function TopBar() {
       </div>
 
       <div className="flex items-center gap-1">
-        <DropdownMenu>
-          <DropdownMenuTrigger asChild>
-            <Button variant="icon" size="icon" aria-label="Settings">
-              <Settings className="size-5" />
-            </Button>
-          </DropdownMenuTrigger>
-          <DropdownMenuContent align="end" className="w-48">
-            <DropdownMenuItem asChild>
-              <Link to="/settings">Settings</Link>
-            </DropdownMenuItem>
-          </DropdownMenuContent>
-        </DropdownMenu>
+        <Link to="/settings">
+          <Button variant="icon" size="icon" aria-label="Settings">
+            <Settings className="size-5" />
+          </Button>
+        </Link>
 
         <DropdownMenu>
           <DropdownMenuTrigger asChild>
@@ -77,5 +73,5 @@ export function TopBar() {
         </DropdownMenu>
       </div>
     </header>
-  )
+  );
 }

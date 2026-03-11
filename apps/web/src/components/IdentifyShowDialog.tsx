@@ -1,25 +1,23 @@
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useState } from "react";
 import {
   Dialog,
   DialogContent,
+  DialogDescription,
   DialogHeader,
   DialogTitle,
-} from '@/components/ui/dialog'
-import { Button } from '@/components/ui/button'
-import { Input } from '@/components/ui/input'
-import {
-  identifyShow,
-  searchSeries,
-  type SeriesSearchResult,
-} from '../api'
+} from "@/components/ui/dialog";
+import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
+import { useIdentifyQueue } from "@/contexts/IdentifyQueueContext";
+import { identifyShow, searchSeries, type SeriesSearchResult } from "../api";
 
 export interface IdentifyShowDialogProps {
-  open: boolean
-  onOpenChange: (open: boolean) => void
-  libraryId: number
-  showKey: string
-  showTitle: string
-  onSuccess: () => void
+  open: boolean;
+  onOpenChange: (open: boolean) => void;
+  libraryId: number;
+  showKey: string;
+  showTitle: string;
+  onSuccess: () => void;
 }
 
 export function IdentifyShowDialog({
@@ -30,62 +28,68 @@ export function IdentifyShowDialog({
   showTitle,
   onSuccess,
 }: IdentifyShowDialogProps) {
-  const [query, setQuery] = useState(showTitle)
-  const [results, setResults] = useState<SeriesSearchResult[]>([])
-  const [loading, setLoading] = useState(false)
-  const [identifying, setIdentifying] = useState<string | null>(null)
-  const [error, setError] = useState<string | null>(null)
+  const { queueLibraryIdentify } = useIdentifyQueue();
+  const [query, setQuery] = useState(showTitle);
+  const [results, setResults] = useState<SeriesSearchResult[]>([]);
+  const [loading, setLoading] = useState(false);
+  const [identifying, setIdentifying] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
     if (open) {
-      setQuery(showTitle)
-      setResults([])
-      setError(null)
+      setQuery(showTitle);
+      setResults([]);
+      setError(null);
     }
-  }, [open, showTitle])
+  }, [open, showTitle]);
 
   const doSearch = useCallback(async () => {
-    const q = query.trim()
+    const q = query.trim();
     if (!q) {
-      setResults([])
-      return
+      setResults([]);
+      return;
     }
-    setLoading(true)
-    setError(null)
+    setLoading(true);
+    setError(null);
     try {
-      const data = await searchSeries(q)
-      setResults(data)
+      const data = await searchSeries(q);
+      setResults(data);
     } catch (e) {
-      setError(e instanceof Error ? e.message : 'Search failed')
-      setResults([])
+      setError(e instanceof Error ? e.message : "Search failed");
+      setResults([]);
     } finally {
-      setLoading(false)
+      setLoading(false);
     }
-  }, [query])
+  }, [query]);
 
   useEffect(() => {
-    if (!open || !query.trim()) return
-    const t = setTimeout(doSearch, 300)
-    return () => clearTimeout(t)
-  }, [open, query, doSearch])
+    if (!open || !query.trim()) return;
+    const t = setTimeout(doSearch, 300);
+    return () => clearTimeout(t);
+  }, [open, query, doSearch]);
 
   async function handleChoose(result: SeriesSearchResult) {
-    const id = result.ExternalID
-    setIdentifying(id)
-    setError(null)
+    const id = result.ExternalID;
+    setIdentifying(id);
+    setError(null);
     try {
-      await identifyShow(libraryId, showKey, parseInt(id, 10))
-      onSuccess()
-      onOpenChange(false)
+      await identifyShow(libraryId, showKey, parseInt(id, 10));
+      queueLibraryIdentify(libraryId, {
+        abortActive: true,
+        prioritize: true,
+        resetState: true,
+      });
+      onSuccess();
+      onOpenChange(false);
     } catch (e) {
-      setError(e instanceof Error ? e.message : 'Identify failed')
+      setError(e instanceof Error ? e.message : "Identify failed");
     } finally {
-      setIdentifying(null)
+      setIdentifying(null);
     }
   }
 
   const year = (r: SeriesSearchResult) =>
-    r.ReleaseDate ? new Date(r.ReleaseDate).getFullYear() : ''
+    r.ReleaseDate ? new Date(r.ReleaseDate).getFullYear() : "";
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
@@ -93,20 +97,20 @@ export function IdentifyShowDialog({
         <DialogHeader>
           <DialogTitle>Identify show</DialogTitle>
         </DialogHeader>
-        <p className="text-sm text-[var(--plum-muted)]">
+        <DialogDescription>
           Search for the correct series and choose it to update this show&apos;s metadata.
-        </p>
+        </DialogDescription>
         <div className="flex gap-2">
           <Input
             type="search"
             placeholder="Search for a TV series…"
             value={query}
             onChange={(e) => setQuery(e.target.value)}
-            onKeyDown={(e) => e.key === 'Enter' && doSearch()}
+            onKeyDown={(e) => e.key === "Enter" && doSearch()}
             className="flex-1"
           />
           <Button type="button" variant="outline" onClick={doSearch} disabled={loading}>
-            {loading ? 'Searching…' : 'Search'}
+            {loading ? "Searching…" : "Search"}
           </Button>
         </div>
         {error && (
@@ -124,15 +128,13 @@ export function IdentifyShowDialog({
               className="flex items-center gap-3 rounded-[var(--radius-md)] border border-[var(--plum-border)] p-2 bg-[var(--plum-panel)]"
             >
               <img
-                src={r.PosterURL || '/placeholder-poster.png'}
+                src={r.PosterURL || "/placeholder-poster.png"}
                 alt=""
                 className="w-12 h-[72px] object-cover rounded-[var(--radius-sm)]"
               />
               <div className="flex-1 min-w-0">
                 <div className="font-medium truncate">{r.Title}</div>
-                {year(r) && (
-                  <div className="text-sm text-[var(--plum-muted)]">{year(r)}</div>
-                )}
+                {year(r) && <div className="text-sm text-[var(--plum-muted)]">{year(r)}</div>}
               </div>
               <Button
                 type="button"
@@ -140,12 +142,12 @@ export function IdentifyShowDialog({
                 onClick={() => handleChoose(r)}
                 disabled={identifying !== null}
               >
-                {identifying === r.ExternalID ? 'Updating…' : 'Choose'}
+                {identifying === r.ExternalID ? "Updating…" : "Choose"}
               </Button>
             </div>
           ))}
         </div>
       </DialogContent>
     </Dialog>
-  )
+  );
 }

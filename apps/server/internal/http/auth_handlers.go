@@ -203,4 +203,3 @@ func (h *AuthHandler) Me(w http.ResponseWriter, r *http.Request) {
 		IsAdmin: user.IsAdmin,
 	})
 }
-

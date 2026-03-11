@@ -3,7 +3,7 @@ ARG ALPINE_VERSION=3.23
 
 # Stage: base — shared Go toolchain and dependencies
 FROM golang:${GO_VERSION} AS base
-RUN apk add --no-cache build-base bash ffmpeg
+RUN apk add --no-cache build-base bash ffmpeg mesa-va-gallium
 WORKDIR /app
 
 # Stage: dev — air hot-reload for development

@@ -1,11 +1,13 @@
 package httpapi
 
 import (
+	"context"
 	"database/sql"
 	"encoding/json"
 	"net/http"
 	"path/filepath"
 	"strconv"
+	"sync"
 	"time"
 
 	"github.com/go-chi/chi/v5"
@@ -120,6 +122,31 @@ type identifyResult struct {
 
 const identifyRateLimitMs = 200
 
+var (
+	identifyInitialTimeout    = 8 * time.Second
+	identifyRetryTimeout      = 45 * time.Second
+	identifyLibraryWorkers    = 3
+	identifyRateLimitInterval = identifyRateLimitMs * time.Millisecond
+)
+
+type identifyJob struct {
+	row     db.IdentificationRow
+	attempt int
+}
+
+type identifyJobStatus string
+
+const (
+	identifyJobSucceeded identifyJobStatus = "succeeded"
+	identifyJobRetry     identifyJobStatus = "retry"
+	identifyJobFailed    identifyJobStatus = "failed"
+)
+
+type identifyJobResult struct {
+	status identifyJobStatus
+	job    identifyJob
+}
+
 func (h *LibraryHandler) IdentifyLibrary(w http.ResponseWriter, r *http.Request) {
 	u := UserFromContext(r.Context())
 	if u == nil {
@@ -147,55 +174,184 @@ func (h *LibraryHandler) IdentifyLibrary(w http.ResponseWriter, r *http.Request)
 		http.Error(w, "internal error", http.StatusInternalServerError)
 		return
 	}
+	if len(rows) == 0 {
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(identifyResult{Identified: 0, Failed: 0})
+		return
+	}
 	var libraryPath string
 	_ = h.DB.QueryRow(`SELECT path FROM libraries WHERE id = ?`, libraryID).Scan(&libraryPath)
 	identified, failed := 0, 0
+	initialJobs := make([]identifyJob, 0, len(rows))
 	for _, row := range rows {
-		info := identifyMediaInfo(row, libraryPath)
-		if info.Season == 0 {
-			info.Season = row.Season
-		}
-		if info.Episode == 0 {
-			info.Episode = row.Episode
-		}
-		if info.Title == "" {
-			info.Title = row.Title
-		}
-		var res *metadata.MatchResult
-		switch row.Kind {
-		case db.LibraryTypeTV:
-			res = h.Meta.IdentifyTV(r.Context(), info)
-		case db.LibraryTypeAnime:
-			res = h.Meta.IdentifyAnime(r.Context(), info)
-		case db.LibraryTypeMovie:
-			res = h.Meta.IdentifyMovie(r.Context(), info)
-		default:
-			failed++
-			continue
-		}
-		if res == nil {
-			failed++
-			time.Sleep(identifyRateLimitMs * time.Millisecond)
-			continue
-		}
-		tmdbID, tvdbID := 0, ""
-		if res.Provider == "tmdb" {
-			if id, err := strconv.Atoi(res.ExternalID); err == nil {
-				tmdbID = id
-			}
-		} else if res.Provider == "tvdb" {
-			tvdbID = res.ExternalID
-		}
-		tbl := db.MediaTableForKind(row.Kind)
-		if err := db.UpdateMediaMetadata(h.DB, tbl, row.RefID, res.Title, res.Overview, res.PosterURL, res.BackdropURL, res.ReleaseDate, res.VoteAverage, tmdbID, tvdbID, row.Season, row.Episode); err != nil {
-			failed++
-		} else {
-			identified++
-		}
-		time.Sleep(identifyRateLimitMs * time.Millisecond)
+		initialJobs = append(initialJobs, identifyJob{row: row})
 	}
+	initialIdentified, retryJobs, initialFailed := h.runIdentifyJobs(r.Context(), libraryPath, initialJobs)
+	retryIdentified, _, retryFailed := h.runIdentifyJobs(r.Context(), libraryPath, retryJobs)
+	identified += initialIdentified + retryIdentified
+	failed += initialFailed + retryFailed
+
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(identifyResult{Identified: identified, Failed: failed})
+}
+
+func (h *LibraryHandler) runIdentifyJobs(
+	ctx context.Context,
+	libraryPath string,
+	jobsToRun []identifyJob,
+) (identified int, retryJobs []identifyJob, failed int) {
+	if len(jobsToRun) == 0 {
+		return 0, nil, 0
+	}
+
+	results := make(chan identifyJobResult, len(jobsToRun))
+	jobs := make(chan identifyJob)
+	workerCount := identifyLibraryWorkers
+	if workerCount > len(jobsToRun) {
+		workerCount = len(jobsToRun)
+	}
+	if workerCount < 1 {
+		workerCount = 1
+	}
+	rateLimiter := newIdentifyRateLimiter(ctx)
+
+	var wg sync.WaitGroup
+	for i := 0; i < workerCount; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for {
+				select {
+				case <-ctx.Done():
+					return
+				case job, ok := <-jobs:
+					if !ok {
+						return
+					}
+					results <- h.identifyLibraryJob(ctx, job, libraryPath, rateLimiter)
+				}
+			}
+		}()
+	}
+
+	go func() {
+		defer close(results)
+		wg.Wait()
+	}()
+
+enqueueLoop:
+	for _, job := range jobsToRun {
+		select {
+		case <-ctx.Done():
+			break enqueueLoop
+		case jobs <- job:
+		}
+	}
+	close(jobs)
+
+	for result := range results {
+		switch result.status {
+		case identifyJobSucceeded:
+			identified++
+		case identifyJobRetry:
+			retryJobs = append(retryJobs, identifyJob{
+				row:     result.job.row,
+				attempt: result.job.attempt + 1,
+			})
+		case identifyJobFailed:
+			failed++
+		}
+	}
+
+	return identified, retryJobs, failed
+}
+
+func newIdentifyRateLimiter(ctx context.Context) <-chan struct{} {
+	ch := make(chan struct{}, 1)
+	ch <- struct{}{}
+	go func() {
+		ticker := time.NewTicker(identifyRateLimitInterval)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				select {
+				case ch <- struct{}{}:
+				default:
+				}
+			}
+		}
+	}()
+	return ch
+}
+
+func identifyTimeoutForAttempt(attempt int) time.Duration {
+	if attempt <= 0 {
+		return identifyInitialTimeout
+	}
+	return identifyRetryTimeout
+}
+
+func (h *LibraryHandler) identifyLibraryJob(
+	ctx context.Context,
+	job identifyJob,
+	libraryPath string,
+	rateLimiter <-chan struct{},
+) identifyJobResult {
+	select {
+	case <-ctx.Done():
+		return identifyJobResult{job: job}
+	case <-rateLimiter:
+	}
+
+	row := job.row
+	info := identifyMediaInfo(row, libraryPath)
+	if info.Season == 0 {
+		info.Season = row.Season
+	}
+	if info.Episode == 0 {
+		info.Episode = row.Episode
+	}
+	if info.Title == "" {
+		info.Title = row.Title
+	}
+
+	itemCtx, cancel := context.WithTimeout(ctx, identifyTimeoutForAttempt(job.attempt))
+	defer cancel()
+
+	var res *metadata.MatchResult
+	switch row.Kind {
+	case db.LibraryTypeTV:
+		res = h.Meta.IdentifyTV(itemCtx, info)
+	case db.LibraryTypeAnime:
+		res = h.Meta.IdentifyAnime(itemCtx, info)
+	case db.LibraryTypeMovie:
+		res = h.Meta.IdentifyMovie(itemCtx, info)
+	default:
+		return identifyJobResult{status: identifyJobFailed, job: job}
+	}
+	if res == nil {
+		if job.attempt == 0 {
+			return identifyJobResult{status: identifyJobRetry, job: job}
+		}
+		return identifyJobResult{status: identifyJobFailed, job: job}
+	}
+
+	tmdbID, tvdbID := 0, ""
+	if res.Provider == "tmdb" {
+		if id, err := strconv.Atoi(res.ExternalID); err == nil {
+			tmdbID = id
+		}
+	} else if res.Provider == "tvdb" {
+		tvdbID = res.ExternalID
+	}
+	tbl := db.MediaTableForKind(row.Kind)
+	if err := db.UpdateMediaMetadata(h.DB, tbl, row.RefID, res.Title, res.Overview, res.PosterURL, res.BackdropURL, res.ReleaseDate, res.VoteAverage, tmdbID, tvdbID, row.Season, row.Episode); err != nil {
+		return identifyJobResult{status: identifyJobFailed, job: job}
+	}
+	return identifyJobResult{status: identifyJobSucceeded, job: job}
 }
 
 func identifyMediaInfo(row db.IdentificationRow, libraryPath string) metadata.MediaInfo {

@@ -1,33 +1,33 @@
-import { useState } from 'react'
-import { useAuthActions, useAuthState } from '../contexts/AuthContext'
+import { useState } from "react";
+import { useAuthActions, useAuthState } from "../contexts/AuthContext";
 
 export function Login() {
-  const { error, loading } = useAuthState()
-  const { login, clearError } = useAuthActions()
-  const [email, setEmail] = useState('')
-  const [password, setPassword] = useState('')
-  const [submitting, setSubmitting] = useState(false)
-  const [submitError, setSubmitError] = useState<string | null>(null)
+  const { error, loading } = useAuthState();
+  const { login, clearError } = useAuthActions();
+  const [email, setEmail] = useState("");
+  const [password, setPassword] = useState("");
+  const [submitting, setSubmitting] = useState(false);
+  const [submitError, setSubmitError] = useState<string | null>(null);
 
   const handleSubmit = async (e: React.FormEvent) => {
-    e.preventDefault()
-    clearError()
-    setSubmitError(null)
+    e.preventDefault();
+    clearError();
+    setSubmitError(null);
     if (!email.trim() || !password) {
-      setSubmitError('Email and password are required.')
-      return
+      setSubmitError("Email and password are required.");
+      return;
     }
-    setSubmitting(true)
+    setSubmitting(true);
     try {
-      await login(email.trim(), password)
+      await login(email.trim(), password);
     } catch (err) {
-      setSubmitError(err instanceof Error ? err.message : 'Login failed.')
+      setSubmitError(err instanceof Error ? err.message : "Login failed.");
     } finally {
-      setSubmitting(false)
+      setSubmitting(false);
     }
-  }
+  };
 
-  const err = submitError ?? error
+  const err = submitError ?? error;
 
   if (loading) {
     return (
@@ -36,7 +36,7 @@ export function Login() {
           <p className="auth-muted">Loading…</p>
         </div>
       </div>
-    )
+    );
   }
 
   return (
@@ -67,10 +67,10 @@ export function Login() {
           </label>
           {err && <p className="auth-error">{err}</p>}
           <button type="submit" className="auth-submit" disabled={submitting}>
-            {submitting ? 'Signing in…' : 'Sign in'}
+            {submitting ? "Signing in…" : "Sign in"}
           </button>
         </form>
       </div>
     </div>
-  )
+  );
 }

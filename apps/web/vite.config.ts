@@ -1,29 +1,28 @@
-import path from 'node:path'
-import { defineConfig } from 'vite'
-import react from '@vitejs/plugin-react'
-import tailwindcss from '@tailwindcss/vite'
+import path from "node:path";
+import { defineConfig } from "vite";
+import react from "@vitejs/plugin-react";
+import tailwindcss from "@tailwindcss/vite";
 
 // https://vite.dev/config/
-const backendUrl = process.env.VITE_BACKEND_URL || 'http://localhost:8080'
+const backendUrl = process.env.VITE_BACKEND_URL || "http://localhost:8080";
 
 export default defineConfig({
   plugins: [react(), tailwindcss()],
   resolve: {
-    alias: { '@': path.resolve(__dirname, './src') },
+    alias: { "@": path.resolve(__dirname, "./src") },
   },
   server: {
     host: true, // Needed for Docker
     proxy: {
-      '/api': {
+      "/api": {
         target: backendUrl,
         changeOrigin: true,
       },
-      '/ws': {
+      "/ws": {
         target: backendUrl,
         ws: true,
         changeOrigin: true,
       },
     },
   },
-})
-
+});

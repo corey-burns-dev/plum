@@ -13,9 +13,9 @@ const tvshowNFO = "tvshow.nfo"
 
 // Kodi-style tvshow.nfo: uniqueid and optional episodeguide JSON.
 type nfoRoot struct {
-	XMLName      xml.Name     `xml:"tvshow"`
+	XMLName      xml.Name      `xml:"tvshow"`
 	UniqueIDs    []nfoUniqueID `xml:"uniqueid"`
-	EpisodeGuide string       `xml:"episodeguide"`
+	EpisodeGuide string        `xml:"episodeguide"`
 }
 
 type nfoUniqueID struct {
@@ -134,4 +134,3 @@ func ApplyShowNFO(info *MediaInfo, showRootPath string) {
 		info.TVDBID = tvdb
 	}
 }
-
