@@ -1,18 +1,48 @@
-import { describe, expect, it, vi, beforeEach } from "vitest";
-import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { Effect } from "effect";
 import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { beforeEach, describe, expect, it, vi } from "vitest";
+import { loadAuthSessionEffect } from "@plum/shared";
 import * as api from "./api";
 import App from "./App";
 
-function renderApp() {
-  const queryClient = new QueryClient({
-    defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
-  });
-  return render(
-    <QueryClientProvider client={queryClient}>
-      <App />
-    </QueryClientProvider>,
+vi.mock("@plum/shared", async () => {
+  const actual = await vi.importActual<typeof import("@plum/shared")>("@plum/shared");
+  const webApi = await vi.importActual<typeof import("./api")>("./api");
+  return {
+    ...actual,
+    loadAuthSessionEffect: vi.fn(),
+    runIdentifyLibraryTask: vi.fn(
+      (
+        _client: unknown,
+        options: { libraryId: number; signal?: AbortSignal; timeoutMs: number },
+      ) => webApi.identifyLibrary(options.libraryId, { signal: options.signal }),
+    ),
+  };
+});
+
+const defaultUser = {
+  id: 1,
+  email: "test@test.com",
+  is_admin: true,
+} satisfies api.User;
+
+function mockAuthSession({
+  hasAdmin = true,
+  user = defaultUser,
+}: {
+  hasAdmin?: boolean;
+  user?: api.User | null;
+} = {}) {
+  vi.mocked(loadAuthSessionEffect).mockReturnValue(
+    Effect.succeed({
+      hasAdmin,
+      user,
+    }),
   );
+}
+
+function renderApp() {
+  return render(<App />);
 }
 
 function deferred<T>() {
@@ -35,16 +65,60 @@ function identifyLibraryIds() {
 describe("App library and player wiring", () => {
   beforeEach(() => {
     vi.restoreAllMocks();
-    window.history.pushState({}, "", "/");
+    vi.mocked(loadAuthSessionEffect).mockReset();
+    window.history.pushState({}, "", "/library/1");
+    mockAuthSession();
     vi.spyOn(api, "getSetupStatus").mockResolvedValue({ hasAdmin: true });
-    vi.spyOn(api, "getMe").mockResolvedValue({
-      id: 1,
-      email: "test@test.com",
-      is_admin: true,
-    });
+    vi.spyOn(api, "getMe").mockResolvedValue(defaultUser);
+    vi.spyOn(api, "getLibraryScanStatus").mockImplementation(async (libraryId) => ({
+      libraryId,
+      phase: "idle",
+      enriching: false,
+      identifyPhase: "idle",
+      identified: 0,
+      identifyFailed: 0,
+      processed: 0,
+      added: 0,
+      updated: 0,
+      removed: 0,
+      unmatched: 0,
+      skipped: 0,
+      identifyRequested: false,
+    }));
+    vi.spyOn(api, "startLibraryScan").mockImplementation(async (libraryId) => ({
+      libraryId,
+      phase: "queued",
+      enriching: false,
+      identifyPhase: "idle",
+      identified: 0,
+      identifyFailed: 0,
+      processed: 0,
+      added: 0,
+      updated: 0,
+      removed: 0,
+      unmatched: 0,
+      skipped: 0,
+      identifyRequested: false,
+      startedAt: new Date().toISOString(),
+    }));
     vi.spyOn(api, "identifyLibrary").mockResolvedValue({ identified: 0, failed: 0 });
-    vi.spyOn(api, "startTranscode").mockResolvedValue();
-    vi.spyOn(api, "cancelTranscode").mockResolvedValue();
+    vi.spyOn(api, "createPlaybackSession").mockImplementation(async (mediaId, payload) => ({
+      sessionId: `session-${mediaId}`,
+      mediaId,
+      revision: 1,
+      audioIndex: payload?.audioIndex ?? -1,
+      status: "starting",
+      playlistPath: `/api/playback/sessions/session-${mediaId}/revisions/1/index.m3u8`,
+    }));
+    vi.spyOn(api, "updatePlaybackSessionAudio").mockImplementation(async (sessionId, payload) => ({
+      sessionId,
+      mediaId: Number(sessionId.replace("session-", "")) || 0,
+      revision: 2,
+      audioIndex: payload.audioIndex,
+      status: "starting",
+      playlistPath: `/api/playback/sessions/${sessionId}/revisions/2/index.m3u8`,
+    }));
+    vi.spyOn(api, "closePlaybackSession").mockResolvedValue();
   });
 
   it("renders library tab and show cards when TV library has media", async () => {
@@ -119,14 +193,18 @@ describe("App library and player wiring", () => {
 
     fireEvent.click(await screen.findByRole("button", { name: /Play Die My Love/i }));
 
-    expect(api.startTranscode).toHaveBeenCalledWith(99);
+    expect(api.createPlaybackSession).toHaveBeenCalledWith(99, { audioIndex: -1 });
+    expect(await screen.findByLabelText("Fullscreen video player")).toBeTruthy();
+
+    fireEvent.click(screen.getAllByRole("button", { name: /Return to docked player/i })[0]!);
+
     expect(await screen.findByLabelText("Playback dock")).toBeTruthy();
 
     fireEvent.click(
       screen.getByRole("button", { name: /Open fullscreen player for Die My Love/i }),
     );
 
-    expect(await screen.findByRole("button", { name: /Return to docked player/i })).toBeTruthy();
+    expect(await screen.findByLabelText("Fullscreen video player")).toBeTruthy();
   });
 
   it("reveals hard TV cards as searching once easier matches appear", async () => {
@@ -365,8 +443,8 @@ describe("App library and player wiring", () => {
     expect(await screen.findByRole("link", { name: /Back to library/i })).toBeTruthy();
     const playButton = await screen.findByRole("button", { name: /Play/i });
     fireEvent.click(playButton);
-    expect(api.startTranscode).toHaveBeenCalledWith(42);
-    expect(await screen.findByLabelText("Playback dock")).toBeTruthy();
+    expect(api.createPlaybackSession).toHaveBeenCalledWith(42, { audioIndex: -1 });
+    expect(await screen.findByLabelText("Fullscreen video player")).toBeTruthy();
   });
 
   it("plays the first episode in a TV group from the poster overlay", async () => {
@@ -402,8 +480,8 @@ describe("App library and player wiring", () => {
 
     fireEvent.click(await screen.findByRole("button", { name: /Play Grouped Show/i }));
 
-    expect(api.startTranscode).toHaveBeenCalledWith(99);
-    expect(await screen.findByLabelText("Playback dock")).toBeTruthy();
+    expect(api.createPlaybackSession).toHaveBeenCalledWith(99, { audioIndex: -1 });
+    expect(await screen.findByLabelText("Fullscreen video player")).toBeTruthy();
   });
 
   it("renders music sections and opens the bottom player without transcoding", async () => {
@@ -449,7 +527,7 @@ describe("App library and player wiring", () => {
     expect(screen.getByRole("button", { name: /Enable shuffle/i })).toBeTruthy();
     expect(screen.getByRole("button", { name: /Previous track/i })).toBeTruthy();
     expect(screen.getByRole("button", { name: /Next track/i })).toBeTruthy();
-    expect(api.startTranscode).not.toHaveBeenCalled();
+    expect(api.createPlaybackSession).not.toHaveBeenCalled();
   });
 
   it("plays a music album from the poster overlay without rendering video controls", async () => {
@@ -491,7 +569,7 @@ describe("App library and player wiring", () => {
     expect(
       screen.queryByRole("button", { name: /Open fullscreen player/i }),
     ).not.toBeInTheDocument();
-    expect(api.startTranscode).not.toHaveBeenCalled();
+    expect(api.createPlaybackSession).not.toHaveBeenCalled();
   });
 
   it("retries auto-identify after a failed first attempt", async () => {
@@ -670,7 +748,10 @@ describe("App library and player wiring", () => {
     });
     expect(identifyLibraryIds()).toEqual([2, 2]);
 
-    retryIdentify.resolve({ identified: 0, failed: 1 });
+    await act(async () => {
+      retryIdentify.resolve({ identified: 0, failed: 1 });
+      await Promise.resolve();
+    });
   });
 
   it("does not mark movies as failed when they already have poster art but omit match status", async () => {
@@ -768,9 +849,8 @@ describe("App library and player wiring", () => {
   });
 
   it("finishes onboarding after scan-only import without waiting for identify", async () => {
-    vi.spyOn(api, "getSetupStatus")
-      .mockResolvedValueOnce({ hasAdmin: false })
-      .mockResolvedValueOnce({ hasAdmin: true });
+    mockAuthSession({ hasAdmin: false, user: null });
+    vi.spyOn(api, "getSetupStatus").mockResolvedValue({ hasAdmin: true });
     vi.spyOn(api, "createAdmin").mockResolvedValue({
       id: 1,
       email: "admin@example.com",
@@ -783,12 +863,21 @@ describe("App library and player wiring", () => {
       path: "/tv",
       user_id: 1,
     });
-    vi.spyOn(api, "scanLibraryById").mockResolvedValue({
-      added: 3,
+    vi.spyOn(api, "startLibraryScan").mockResolvedValue({
+      libraryId: 10,
+      phase: "queued",
+      enriching: false,
+      identifyPhase: "idle",
+      identified: 0,
+      identifyFailed: 0,
+      processed: 0,
+      added: 0,
       updated: 0,
       removed: 0,
-      unmatched: 1,
+      unmatched: 0,
       skipped: 0,
+      identifyRequested: true,
+      startedAt: new Date().toISOString(),
     });
     vi.spyOn(api, "listLibraries").mockResolvedValue([
       { id: 10, name: "TV", type: "tv", path: "/tv", user_id: 1 },
@@ -822,19 +911,17 @@ describe("App library and player wiring", () => {
     fireEvent.click(screen.getByRole("button", { name: /^Add library$/i }));
 
     await waitFor(() => {
-      expect(api.scanLibraryById).toHaveBeenCalledWith(10, { identify: false });
+      expect(api.startLibraryScan).toHaveBeenCalledWith(10);
     });
 
     fireEvent.click(screen.getByRole("button", { name: /Finish setup/i }));
 
     expect(await screen.findByText(/No media in this library yet/i)).toBeTruthy();
-    expect(identifyLibraryIds()).toContain(10);
   });
 
   it("auto-enters the app after adding default libraries with scan-only import", async () => {
-    vi.spyOn(api, "getSetupStatus")
-      .mockResolvedValueOnce({ hasAdmin: false })
-      .mockResolvedValueOnce({ hasAdmin: true });
+    mockAuthSession({ hasAdmin: false, user: null });
+    vi.spyOn(api, "getSetupStatus").mockResolvedValue({ hasAdmin: true });
     vi.spyOn(api, "createAdmin").mockResolvedValue({
       id: 1,
       email: "admin@example.com",
@@ -845,13 +932,22 @@ describe("App library and player wiring", () => {
       .mockResolvedValueOnce({ id: 12, name: "Movies", type: "movie", path: "/movies", user_id: 1 })
       .mockResolvedValueOnce({ id: 13, name: "Anime", type: "anime", path: "/anime", user_id: 1 })
       .mockResolvedValueOnce({ id: 14, name: "Music", type: "music", path: "/music", user_id: 1 });
-    vi.spyOn(api, "scanLibraryById").mockResolvedValue({
-      added: 1,
+    vi.spyOn(api, "startLibraryScan").mockImplementation(async (libraryId) => ({
+      libraryId,
+      phase: "queued",
+      enriching: false,
+      identifyPhase: "idle",
+      identified: 0,
+      identifyFailed: 0,
+      processed: 0,
+      added: 0,
       updated: 0,
       removed: 0,
       unmatched: 0,
       skipped: 0,
-    });
+      identifyRequested: true,
+      startedAt: new Date().toISOString(),
+    }));
     vi.spyOn(api, "listLibraries").mockResolvedValue([
       { id: 11, name: "TV", type: "tv", path: "/tv", user_id: 1 },
       { id: 12, name: "Movies", type: "movie", path: "/movies", user_id: 1 },
@@ -879,10 +975,10 @@ describe("App library and player wiring", () => {
     fireEvent.click(screen.getByRole("button", { name: /Add default libraries/i }));
 
     await waitFor(() => {
-      expect(api.scanLibraryById).toHaveBeenNthCalledWith(1, 11, { identify: false });
-      expect(api.scanLibraryById).toHaveBeenNthCalledWith(2, 12, { identify: false });
-      expect(api.scanLibraryById).toHaveBeenNthCalledWith(3, 13, { identify: false });
-      expect(api.scanLibraryById).toHaveBeenNthCalledWith(4, 14, { identify: false });
+      expect(api.startLibraryScan).toHaveBeenNthCalledWith(1, 11);
+      expect(api.startLibraryScan).toHaveBeenNthCalledWith(2, 12);
+      expect(api.startLibraryScan).toHaveBeenNthCalledWith(3, 13);
+      expect(api.startLibraryScan).toHaveBeenNthCalledWith(4, 14);
     });
 
     expect(await screen.findByText(/No media in this library yet/i)).toBeTruthy();
@@ -921,9 +1017,9 @@ describe("App library and player wiring", () => {
     renderApp();
 
     expect(await screen.findByRole("heading", { name: /Transcoding/i })).toBeTruthy();
-    expect(screen.getByLabelText(/VAAPI device/i)).toHaveValue("/dev/dri/renderD128");
-    expect(screen.getByLabelText(/Enable hardware encoding/i)).not.toBeChecked();
-    expect(screen.getByLabelText(/HEVC 10-bit/i)).toBeChecked();
+    expect(await screen.findByLabelText(/VAAPI device/i)).toHaveValue("/dev/dri/renderD128");
+    expect(await screen.findByLabelText(/Enable hardware encoding/i)).not.toBeChecked();
+    expect(await screen.findByLabelText(/HEVC 10-bit/i)).toBeChecked();
   });
 
   it("saves transcoding settings updates", async () => {
@@ -1011,6 +1107,73 @@ describe("App library and player wiring", () => {
     expect(await screen.findByText(/Transcoding settings saved./i)).toBeTruthy();
   });
 
+  it("saves library playback defaults from settings", async () => {
+    window.history.pushState({}, "", "/settings");
+    vi.spyOn(api, "listLibraries").mockResolvedValue([
+      {
+        id: 14,
+        name: "Anime",
+        type: "anime",
+        path: "/anime",
+        user_id: 1,
+        preferred_audio_language: "ja",
+        preferred_subtitle_language: "en",
+        subtitles_enabled_by_default: true,
+      },
+    ]);
+    vi.spyOn(api, "getTranscodingSettings").mockResolvedValue({
+      settings: {
+        vaapiEnabled: false,
+        vaapiDevicePath: "/dev/dri/renderD128",
+        decodeCodecs: {
+          h264: true,
+          hevc: true,
+          mpeg2: true,
+          vc1: true,
+          vp8: true,
+          vp9: true,
+          av1: true,
+          hevc10bit: true,
+          vp910bit: true,
+        },
+        hardwareEncodingEnabled: false,
+        encodeFormats: {
+          h264: true,
+          hevc: false,
+          av1: false,
+        },
+        preferredHardwareEncodeFormat: "h264",
+        allowSoftwareFallback: true,
+      },
+      warnings: [],
+    });
+    const updateSpy = vi.spyOn(api, "updateLibraryPlaybackPreferences").mockResolvedValue({
+      id: 14,
+      name: "Anime",
+      type: "anime",
+      path: "/anime",
+      user_id: 1,
+      preferred_audio_language: "ja",
+      preferred_subtitle_language: "en",
+      subtitles_enabled_by_default: false,
+    });
+
+    renderApp();
+
+    fireEvent.click(await screen.findByLabelText(/Enable subtitles by default/i));
+    fireEvent.click(screen.getByRole("button", { name: /Save defaults/i }));
+
+    await waitFor(() => {
+      expect(updateSpy).toHaveBeenCalledWith(14, {
+        preferred_audio_language: "ja",
+        preferred_subtitle_language: "en",
+        subtitles_enabled_by_default: false,
+      });
+    });
+
+    expect(await screen.findByText(/Playback defaults saved./i)).toBeTruthy();
+  });
+
   it("cancels transcode when dismissing a video player", async () => {
     vi.spyOn(api, "listLibraries").mockResolvedValue([
       { id: 2, name: "Movies", type: "movie", path: "/movies", user_id: 1 },
@@ -1030,14 +1193,17 @@ describe("App library and player wiring", () => {
     renderApp();
 
     fireEvent.click(await screen.findByRole("button", { name: /Play Die My Love/i }));
+    expect(await screen.findByLabelText("Fullscreen video player")).toBeTruthy();
+
+    fireEvent.click(screen.getAllByRole("button", { name: /Return to docked player/i })[0]!);
     expect(await screen.findByLabelText("Playback dock")).toBeTruthy();
 
     // Clear mock calls from the pre-play cancel
-    vi.mocked(api.cancelTranscode).mockClear();
+    vi.mocked(api.closePlaybackSession).mockClear();
 
     fireEvent.click(screen.getByRole("button", { name: /Close player/i }));
 
-    expect(api.cancelTranscode).toHaveBeenCalledTimes(1);
+    expect(api.closePlaybackSession).toHaveBeenCalledTimes(1);
   });
 
   it("does not cancel transcode when dismissing a music player", async () => {
@@ -1063,10 +1229,10 @@ describe("App library and player wiring", () => {
     fireEvent.click(await screen.findByRole("button", { name: /Track One/i }));
     expect(await screen.findByLabelText("Music player")).toBeTruthy();
 
-    vi.mocked(api.cancelTranscode).mockClear();
+    vi.mocked(api.closePlaybackSession).mockClear();
 
     fireEvent.click(screen.getByRole("button", { name: /Close player/i }));
 
-    expect(api.cancelTranscode).not.toHaveBeenCalled();
+    expect(api.closePlaybackSession).not.toHaveBeenCalled();
   });
 });

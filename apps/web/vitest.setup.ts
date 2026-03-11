@@ -4,6 +4,10 @@ import { vi } from "vitest";
 const originalConsoleLog = console.log;
 
 Object.defineProperties(HTMLMediaElement.prototype, {
+  load: {
+    configurable: true,
+    value: vi.fn(),
+  },
   pause: {
     configurable: true,
     value: vi.fn(),
@@ -28,6 +32,11 @@ class MockWebSocket {
   static OPEN = 1;
   static CLOSING = 2;
   static CLOSED = 3;
+  static instances: MockWebSocket[] = [];
+
+  static reset() {
+    MockWebSocket.instances = [];
+  }
 
   onopen: ((event: Event) => void) | null = null;
   onmessage: ((event: MessageEvent) => void) | null = null;
@@ -46,6 +55,7 @@ class MockWebSocket {
 
   constructor(url: string) {
     this.url = url;
+    MockWebSocket.instances.push(this);
     setTimeout(() => {
       this.readyState = MockWebSocket.OPEN;
       this.emit("open", new Event("open"));
@@ -97,6 +107,15 @@ class MockWebSocket {
 
   dispatchEvent() {
     return true;
+  }
+
+  mockMessage(data: string) {
+    this.emit(
+      "message",
+      {
+        data,
+      } as MessageEvent,
+    );
   }
 }
 
