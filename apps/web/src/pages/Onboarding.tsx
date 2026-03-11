@@ -3,7 +3,7 @@ import type { LibraryType } from '../api'
 import { createAdmin, createLibrary, scanLibraryById } from '../api'
 import { useAuthActions } from '../contexts/AuthContext'
 
-type Step = 'admin' | 'library' | 'done'
+type Step = 'admin' | 'library'
 
 type AddedLibrary = {
   id: number
@@ -11,6 +11,10 @@ type AddedLibrary = {
   type: LibraryType
   path: string
   addedCount: number
+  updatedCount: number
+  removedCount: number
+  unmatchedCount: number
+  skippedCount: number
 }
 
 type OnboardingProps = {
@@ -104,7 +108,17 @@ export function Onboarding({ onGoToHome }: OnboardingProps) {
       const result = await scanLibraryById(lib.id, { identify: false })
       setAddedLibraries((prev) => [
         ...prev,
-        { id: lib.id, name: lib.name, type: lib.type, path: lib.path, addedCount: result.added },
+        {
+          id: lib.id,
+          name: lib.name,
+          type: lib.type,
+          path: lib.path,
+          addedCount: result.added,
+          updatedCount: result.updated,
+          removedCount: result.removed,
+          unmatchedCount: result.unmatched,
+          skippedCount: result.skipped,
+        },
       ])
       setLibraryName('')
       setLibraryPath('')
@@ -132,9 +146,22 @@ export function Onboarding({ onGoToHome }: OnboardingProps) {
         }
         setAddedLibraries((prev) => [
           ...prev,
-          { id: lib.id, name: lib.name, type: lib.type, path: lib.path, addedCount },
+          {
+            id: lib.id,
+            name: lib.name,
+            type: lib.type,
+            path: lib.path,
+            addedCount,
+            updatedCount: 0,
+            removedCount: 0,
+            unmatchedCount: 0,
+            skippedCount: 0,
+          },
         ])
         existingPaths.add(def.path)
+      }
+      if (existingPaths.size > 0) {
+        onGoToHome()
       }
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to add default libraries.')
@@ -144,7 +171,7 @@ export function Onboarding({ onGoToHome }: OnboardingProps) {
   }
 
   const handleFinishSetup = () => {
-    setStep('done')
+    onGoToHome()
   }
 
   return (
@@ -152,8 +179,7 @@ export function Onboarding({ onGoToHome }: OnboardingProps) {
       <div className="onboarding-wizard">
         <div className="wizard-progress">
           <span className={step === 'admin' ? 'active' : 'done'}>1. Admin</span>
-          <span className={step === 'library' ? 'active' : step === 'done' ? 'done' : ''}>2. Library</span>
-          <span className={step === 'done' ? 'active' : ''}>Done</span>
+          <span className={step === 'library' ? 'active' : ''}>2. Library</span>
         </div>
 
         {step === 'admin' && (
@@ -287,7 +313,7 @@ export function Onboarding({ onGoToHome }: OnboardingProps) {
                 <ul className="onboarding-libraries-list">
                   {addedLibraries.map((lib) => (
                     <li key={lib.id}>
-                      <strong>{lib.name}</strong> ({lib.type}) — {lib.addedCount} items
+                      <strong>{lib.name}</strong> ({lib.type}) — added {lib.addedCount}, updated {lib.updatedCount}, unmatched {lib.unmatchedCount}, skipped {lib.skippedCount}, removed {lib.removedCount}
                     </li>
                   ))}
                 </ul>
@@ -296,21 +322,6 @@ export function Onboarding({ onGoToHome }: OnboardingProps) {
           </div>
         )}
 
-        {step === 'done' && (
-          <div className="auth-card">
-            <h1 className="auth-title">All set</h1>
-            {addedLibraries.length > 0 && (
-              <p className="auth-sub">
-                Imported <strong>{addedLibraries.reduce((sum, lib) => sum + lib.addedCount, 0)}</strong> items across{' '}
-                {addedLibraries.length} {addedLibraries.length === 1 ? 'library' : 'libraries'}.
-              </p>
-            )}
-            <p className="auth-sub">Go to your library to browse and play.</p>
-            <button type="button" className="auth-submit" onClick={onGoToHome}>
-              Go to your library
-            </button>
-          </div>
-        )}
       </div>
     </div>
   )

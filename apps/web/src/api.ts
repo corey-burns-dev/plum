@@ -3,11 +3,12 @@ import type {
   EmbeddedSubtitle,
   Library,
   LibraryType,
+  MatchStatus,
   MediaItem,
   Subtitle,
 } from '@plum/contracts'
 
-export type { CreateLibraryPayload, Library, LibraryType, MediaItem, Subtitle, EmbeddedSubtitle }
+export type { CreateLibraryPayload, Library, LibraryType, MatchStatus, MediaItem, Subtitle, EmbeddedSubtitle }
 
 export interface User {
   id: number
@@ -96,7 +97,7 @@ export async function listLibraries(): Promise<Library[]> {
 export async function scanLibraryById(
   id: number,
   options?: { identify?: boolean },
-): Promise<{ added: number }> {
+): Promise<ScanLibraryResult> {
   const identify = options?.identify !== false
   const url = `${BASE_URL}/api/libraries/${id}/scan${identify ? '' : '?identify=false'}`
   const res = await fetch(url, {
@@ -107,6 +108,46 @@ export async function scanLibraryById(
     const text = await res.text()
     throw new Error(text || `Scan: ${res.status}`)
   }
+  return res.json()
+}
+
+export interface ScanLibraryResult {
+  added: number
+  updated: number
+  removed: number
+  unmatched: number
+  skipped: number
+}
+
+export interface IdentifyResult {
+  identified: number
+  failed: number
+}
+
+export async function identifyLibrary(id: number): Promise<IdentifyResult> {
+  const res = await fetch(`${BASE_URL}/api/libraries/${id}/identify`, {
+    ...defaultFetchOpts,
+    method: 'POST',
+  })
+  if (!res.ok) {
+    const text = await res.text()
+    throw new Error(text || `Identify: ${res.status}`)
+  }
+  return res.json()
+}
+
+export interface SeriesDetails {
+  name: string
+  overview: string
+  poster_path: string
+  backdrop_path: string
+  first_air_date: string
+}
+
+export async function fetchSeriesByTmdbId(tmdbId: number): Promise<SeriesDetails | null> {
+  const res = await fetch(`${BASE_URL}/api/series/${tmdbId}`, defaultFetchOpts)
+  if (res.status === 404) return null
+  if (!res.ok) throw new Error(`Series: ${res.status}`)
   return res.json()
 }
 
@@ -136,4 +177,60 @@ export async function startTranscode(id: number): Promise<void> {
     method: 'POST',
   })
   if (!res.ok) throw new Error(`Failed to start transcode: ${res.status}`)
+}
+
+/** TV search result from GET /api/series/search (TMDB match). Matches Go MatchResult JSON. */
+export interface SeriesSearchResult {
+  Title: string
+  Overview: string
+  PosterURL: string
+  BackdropURL: string
+  ReleaseDate: string
+  VoteAverage: number
+  Provider: string
+  ExternalID: string
+}
+
+export async function searchSeries(query: string): Promise<SeriesSearchResult[]> {
+  if (!query.trim()) return []
+  const res = await fetch(
+    `${BASE_URL}/api/series/search?q=${encodeURIComponent(query.trim())}`,
+    defaultFetchOpts,
+  )
+  if (!res.ok) throw new Error(`Search: ${res.status}`)
+  const data = await res.json()
+  return Array.isArray(data) ? data : []
+}
+
+export interface ShowActionResult {
+  updated: number
+}
+
+export async function refreshShow(
+  libraryId: number,
+  showKey: string,
+): Promise<ShowActionResult> {
+  const res = await fetch(`${BASE_URL}/api/libraries/${libraryId}/shows/refresh`, {
+    ...defaultFetchOpts,
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ showKey }),
+  })
+  if (!res.ok) throw new Error(`Refresh: ${res.status}`)
+  return res.json()
+}
+
+export async function identifyShow(
+  libraryId: number,
+  showKey: string,
+  tmdbId: number,
+): Promise<ShowActionResult> {
+  const res = await fetch(`${BASE_URL}/api/libraries/${libraryId}/shows/identify`, {
+    ...defaultFetchOpts,
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ showKey, tmdbId }),
+  })
+  if (!res.ok) throw new Error(`Identify: ${res.status}`)
+  return res.json()
 }

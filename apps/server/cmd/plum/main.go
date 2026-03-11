@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"strconv"
 	"syscall"
 	"time"
@@ -41,9 +42,14 @@ func main() {
 	hub := ws.NewHub()
 	go hub.Run()
 
+	thumbDir := getEnv("PLUM_THUMBNAILS_DIR", "")
+	if thumbDir == "" {
+		thumbDir = filepath.Join(filepath.Dir(conn), "thumbnails")
+	}
+
 	srv := &http.Server{
 		Addr:         addr,
-		Handler:      buildRouter(sqlDB, hub, pipeline),
+		Handler:      buildRouter(sqlDB, hub, pipeline, thumbDir),
 		ReadTimeout:  15 * time.Second,
 		WriteTimeout: 15 * time.Second,
 	}
@@ -76,7 +82,7 @@ func getEnv(key, def string) string {
 	return def
 }
 
-func buildRouter(sqlDB *sql.DB, hub *ws.Hub, pipeline *metadata.Pipeline) http.Handler {
+func buildRouter(sqlDB *sql.DB, hub *ws.Hub, pipeline *metadata.Pipeline, thumbDir string) http.Handler {
 	r := chi.NewRouter()
 
 	// CORS: allow credentials (cookies) by reflecting Origin when set
@@ -101,7 +107,7 @@ func buildRouter(sqlDB *sql.DB, hub *ws.Hub, pipeline *metadata.Pipeline) http.H
 	r.Use(httpapi.AuthMiddleware(sqlDB))
 
 	authHandler := &httpapi.AuthHandler{DB: sqlDB}
-	libHandler := &httpapi.LibraryHandler{DB: sqlDB, Meta: pipeline}
+	libHandler := &httpapi.LibraryHandler{DB: sqlDB, Meta: pipeline, Series: pipeline, Pipeline: pipeline}
 
 	r.Get("/health", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
@@ -120,27 +126,33 @@ func buildRouter(sqlDB *sql.DB, hub *ws.Hub, pipeline *metadata.Pipeline) http.H
 		protected.Post("/api/libraries", libHandler.CreateLibrary)
 		protected.Get("/api/libraries", libHandler.ListLibraries)
 		protected.Post("/api/libraries/{id}/scan", libHandler.ScanLibrary)
+		protected.Post("/api/libraries/{id}/identify", libHandler.IdentifyLibrary)
 		protected.Get("/api/libraries/{id}/media", libHandler.ListLibraryMedia)
+		protected.Post("/api/libraries/{id}/shows/refresh", libHandler.RefreshShow)
+		protected.Post("/api/libraries/{id}/shows/identify", libHandler.IdentifyShow)
+
+		protected.Get("/api/series/search", libHandler.GetSeriesSearch)
+		protected.Get("/api/series/{tmdbId}", libHandler.GetSeriesDetails)
 
 		protected.Get("/api/media", func(w http.ResponseWriter, r *http.Request) {
 			db.HandleListMedia(w, r, sqlDB)
 		})
 		protected.Post("/api/transcode/{id}", func(w http.ResponseWriter, r *http.Request) {
-		idStr := chi.URLParam(r, "id")
-		id, err := strconv.Atoi(idStr)
-		if err != nil {
-			http.Error(w, "invalid id", http.StatusBadRequest)
-			return
-		}
+			idStr := chi.URLParam(r, "id")
+			id, err := strconv.Atoi(idStr)
+			if err != nil {
+				http.Error(w, "invalid id", http.StatusBadRequest)
+				return
+			}
 			transcoder.HandleStartTranscode(w, r, sqlDB, hub, id)
 		})
 		protected.Get("/api/stream/{id}", func(w http.ResponseWriter, r *http.Request) {
-		idStr := chi.URLParam(r, "id")
-		id, err := strconv.Atoi(idStr)
-		if err != nil {
-			http.Error(w, "invalid id", http.StatusBadRequest)
-			return
-		}
+			idStr := chi.URLParam(r, "id")
+			id, err := strconv.Atoi(idStr)
+			if err != nil {
+				http.Error(w, "invalid id", http.StatusBadRequest)
+				return
+			}
 			if err := db.HandleStreamMedia(w, r, sqlDB, id); err != nil {
 				status := http.StatusInternalServerError
 				if err == db.ErrNotFound {
@@ -150,18 +162,18 @@ func buildRouter(sqlDB *sql.DB, hub *ws.Hub, pipeline *metadata.Pipeline) http.H
 			}
 		})
 		protected.Get("/api/media/{id}/subtitles/embedded/{index}", func(w http.ResponseWriter, r *http.Request) {
-		idStr := chi.URLParam(r, "id")
-		indexStr := chi.URLParam(r, "index")
-		id, err := strconv.Atoi(idStr)
-		if err != nil {
-			http.Error(w, "invalid id", http.StatusBadRequest)
-			return
-		}
-		streamIndex, err := strconv.Atoi(indexStr)
-		if err != nil {
-			http.Error(w, "invalid index", http.StatusBadRequest)
-			return
-		}
+			idStr := chi.URLParam(r, "id")
+			indexStr := chi.URLParam(r, "index")
+			id, err := strconv.Atoi(idStr)
+			if err != nil {
+				http.Error(w, "invalid id", http.StatusBadRequest)
+				return
+			}
+			streamIndex, err := strconv.Atoi(indexStr)
+			if err != nil {
+				http.Error(w, "invalid index", http.StatusBadRequest)
+				return
+			}
 			if err := db.HandleStreamEmbeddedSubtitle(w, r, sqlDB, id, streamIndex); err != nil {
 				status := http.StatusInternalServerError
 				if err == db.ErrNotFound {
@@ -171,13 +183,28 @@ func buildRouter(sqlDB *sql.DB, hub *ws.Hub, pipeline *metadata.Pipeline) http.H
 			}
 		})
 		protected.Get("/api/subtitles/{id}", func(w http.ResponseWriter, r *http.Request) {
-		idStr := chi.URLParam(r, "id")
-		id, err := strconv.Atoi(idStr)
-		if err != nil {
-			http.Error(w, "invalid id", http.StatusBadRequest)
-			return
-		}
+			idStr := chi.URLParam(r, "id")
+			id, err := strconv.Atoi(idStr)
+			if err != nil {
+				http.Error(w, "invalid id", http.StatusBadRequest)
+				return
+			}
 			if err := db.HandleStreamSubtitle(w, r, sqlDB, id); err != nil {
+				status := http.StatusInternalServerError
+				if err == db.ErrNotFound {
+					status = http.StatusNotFound
+				}
+				http.Error(w, err.Error(), status)
+			}
+		})
+		protected.Get("/api/media/{id}/thumbnail", func(w http.ResponseWriter, r *http.Request) {
+			idStr := chi.URLParam(r, "id")
+			id, err := strconv.Atoi(idStr)
+			if err != nil {
+				http.Error(w, "invalid id", http.StatusBadRequest)
+				return
+			}
+			if err := db.HandleServeThumbnail(w, r, sqlDB, id, thumbDir); err != nil {
 				status := http.StatusInternalServerError
 				if err == db.ErrNotFound {
 					status = http.StatusNotFound

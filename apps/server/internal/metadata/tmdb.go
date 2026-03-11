@@ -16,6 +16,10 @@ type TMDBClient struct {
 	APIKey string
 }
 
+func (c *TMDBClient) ProviderName() string {
+	return "tmdb"
+}
+
 type TMDBResult struct {
 	ID           int     `json:"id"`
 	Name         string  `json:"name,omitempty"`
@@ -82,6 +86,19 @@ func (c *TMDBClient) SearchMovie(ctx context.Context, query string) ([]MatchResu
 	return out, nil
 }
 
+func (c *TMDBClient) GetMovie(ctx context.Context, movieID string) (*MatchResult, error) {
+	id, err := strconv.Atoi(movieID)
+	if err != nil {
+		return nil, err
+	}
+	detail, err := c.getMovieDetails(id)
+	if err != nil || detail == nil {
+		return nil, err
+	}
+	m := c.tmdbResultToMatch(*detail, detail.Title, detail.ReleaseDate)
+	return &m, nil
+}
+
 func (c *TMDBClient) GetEpisode(ctx context.Context, seriesID string, season, episode int) (*MatchResult, error) {
 	tvID, err := strconv.Atoi(seriesID)
 	if err != nil {
@@ -117,7 +134,8 @@ func (c *TMDBClient) GetEpisode(ctx context.Context, seriesID string, season, ep
 		m.BackdropURL = tmdbImageURL(series.BackdropPath, "w500")
 	}
 	m.Provider = "tmdb"
-	m.ExternalID = strconv.Itoa(ep.ID)
+	// Use series ID (tvID) so all episodes of the same show share one tmdb_id for grouping.
+	m.ExternalID = strconv.Itoa(tvID)
 	return &m, nil
 }
 
@@ -146,6 +164,35 @@ func (c *TMDBClient) getTVDetails(id int) (*TMDBResult, error) {
 		return nil, err
 	}
 	return &res, nil
+}
+
+func (c *TMDBClient) getMovieDetails(id int) (*TMDBResult, error) {
+	u := fmt.Sprintf("%s/movie/%d?api_key=%s", tmdbBaseURL, id, c.APIKey)
+	resp, err := http.Get(u)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	var res TMDBResult
+	if err := json.NewDecoder(resp.Body).Decode(&res); err != nil {
+		return nil, err
+	}
+	return &res, nil
+}
+
+// GetSeriesDetails returns TV series metadata by TMDB ID for the show-detail UI.
+func (c *TMDBClient) GetSeriesDetails(ctx context.Context, tmdbID int) (*SeriesDetails, error) {
+	detail, err := c.getTVDetails(tmdbID)
+	if err != nil || detail == nil {
+		return nil, err
+	}
+	return &SeriesDetails{
+		Name:         detail.Name,
+		Overview:     detail.Overview,
+		PosterPath:   tmdbImageURL(detail.PosterPath, "w500"),
+		BackdropPath: tmdbImageURL(detail.BackdropPath, "w500"),
+		FirstAirDate: detail.FirstAirDate,
+	}, nil
 }
 
 func (c *TMDBClient) getEpisodeDetails(tvID, season, episode int) (*TMDBResult, error) {

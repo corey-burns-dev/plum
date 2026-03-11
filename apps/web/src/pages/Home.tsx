@@ -1,255 +1,302 @@
-import { useCallback, useEffect, useRef, useState } from 'react'
-import { fetchLibraryMedia, listLibraries, type Library, type MediaItem } from '../api'
-import { useAuthActions, useAuthState } from '../contexts/AuthContext'
+import { useCallback, useEffect, useMemo, useRef, useState, type MouseEvent as ReactMouseEvent } from 'react'
+import { useNavigate, useParams } from 'react-router-dom'
+import type { Library } from '../api'
+import { usePlayer } from '../contexts/PlayerContext'
+import type { ShowGroup } from '../lib/showGrouping'
+import { groupMediaByShow } from '../lib/showGrouping'
+import { useIdentifyLibrary, useLibraryMedia, useLibraries, useRefreshShow } from '../queries'
+import { IdentifyShowDialog } from '../components/IdentifyShowDialog'
+import { LibraryPosterGrid } from '../components/LibraryPosterGrid'
+import { MusicLibraryView } from '../components/MusicLibraryView'
 
-const LIBRARY_MEDIA_TIMEOUT_MS = 15_000
-
-function fetchLibraryMediaWithTimeout(id: number): Promise<MediaItem[]> {
-  return Promise.race([
-    fetchLibraryMedia(id),
-    new Promise<never>((_, reject) =>
-      setTimeout(() => reject(new Error('Request timed out')), LIBRARY_MEDIA_TIMEOUT_MS)
-    ),
-  ])
-}
-
-function getShowName(title: string): string {
-  const match = title.match(/^(.+?)\s*-\s*S\d+/i)
-  return match ? match[1].trim() : title
-}
-
-/** Display label for library tab: Movies, TV, Anime, or Music based on type and name. */
-function getLibraryTabLabel(lib: Library): string {
-  if (lib.type === 'movie') return 'Movies'
-  if (lib.type === 'music') return 'Music'
-  if (lib.type === 'anime' || (lib.type === 'tv' && /anime/i.test(lib.name))) return 'Anime'
-  if (lib.type === 'tv') return 'TV'
-  return lib.name
-}
-
-function groupMediaByShow(items: MediaItem[]): Map<string, MediaItem[]> {
-  const map = new Map<string, MediaItem[]>()
-  for (const m of items) {
-    const show = getShowName(m.title)
-    const list = map.get(show) ?? []
-    list.push(m)
-    map.set(show, list)
-  }
-  for (const list of map.values()) {
-    list.sort((a, b) => a.title.localeCompare(b.title))
-  }
-  return map
-}
+const isTVOrAnime = (lib: Library) => lib.type === 'tv' || lib.type === 'anime'
 
 export function Home() {
-  const { user } = useAuthState()
-  const { logout } = useAuthActions()
-  const [libraries, setLibraries] = useState<Library[]>([])
-  const [selectedLibraryId, setSelectedLibraryId] = useState<number | null>(null)
-  const [mediaByLibrary, setMediaByLibrary] = useState<Record<number, MediaItem[]>>({})
-  const [loadingLibs, setLoadingLibs] = useState(true)
-  const [loadLibsError, setLoadLibsError] = useState<string | null>(null)
-  const [loadingMedia, setLoadingMedia] = useState<number | null>(null)
-  const [errorByLibrary, setErrorByLibrary] = useState<Record<number, string>>({})
-  const selectedLibraryIdRef = useRef<number | null>(null)
-  selectedLibraryIdRef.current = selectedLibraryId
+  const { libraryId: libraryIdParam } = useParams()
+  const navigate = useNavigate()
+  const { playMedia, playMusicCollection } = usePlayer()
+  const {
+    data: libraries = [],
+    isLoading: loadingLibs,
+    error: loadLibsError,
+    refetch: refetchLibraries,
+  } = useLibraries()
+  const selectedLibraryId = useMemo(() => {
+    const id = libraryIdParam ? parseInt(libraryIdParam, 10) : null
+    if (id != null && libraries.some((library) => library.id === id)) return id
+    return libraries[0]?.id ?? null
+  }, [libraryIdParam, libraries])
+  const {
+    data: selectedItems = [],
+    isLoading: selectedLoading,
+    error: selectedError,
+    refetch: refetchLibraryMedia,
+  } = useLibraryMedia(selectedLibraryId)
+  const identifyMutation = useIdentifyLibrary()
+  const identifyLibraryInBackground = identifyMutation.mutateAsync
+  const refreshShowMutation = useRefreshShow()
+  const queuedLibsRef = useRef<Set<number>>(new Set())
+  const identifiedLibsRef = useRef<Set<number>>(new Set())
+  const identifyingLibsRef = useRef<Set<number>>(new Set())
+  const identifyRetryCountsRef = useRef<Map<number, number>>(new Map())
+  const identifyOrderRef = useRef<number[]>([])
+  const identifyPumpRunningRef = useRef(false)
+  const [identifyingLibraryIds, setIdentifyingLibraryIds] = useState<number[]>([])
+  const selectedLib = libraries.find((library) => library.id === selectedLibraryId)
 
-  const loadLibraryMedia = useCallback((id: number) => {
-    setLoadingMedia(id)
-    setErrorByLibrary((prev) => {
-      const next = { ...prev }
-      delete next[id]
-      return next
+  const [contextMenu, setContextMenu] = useState<{ x: number; y: number; group: ShowGroup } | null>(null)
+  const [identifyGroup, setIdentifyGroup] = useState<ShowGroup | null>(null)
+  const contextMenuRef = useRef<HTMLDivElement>(null)
+  const closeContextMenu = useCallback(() => setContextMenu(null), [])
+
+  useEffect(() => {
+    if (!contextMenu) return
+    const onMouseDown = (event: MouseEvent) => {
+      if (contextMenuRef.current?.contains(event.target as Node)) return
+      closeContextMenu()
+    }
+    document.addEventListener('mousedown', onMouseDown)
+    return () => document.removeEventListener('mousedown', onMouseDown)
+  }, [contextMenu, closeContextMenu])
+
+  useEffect(() => {
+    if (libraryIdParam != null || libraries.length === 0) return
+    navigate(`/library/${libraries[0].id}`, { replace: true })
+  }, [libraryIdParam, libraries, navigate])
+
+  const setLibraryIdentifying = useCallback((libraryId: number, identifying: boolean) => {
+    setIdentifyingLibraryIds((current) => {
+      if (identifying) {
+        return current.includes(libraryId) ? current : [...current, libraryId]
+      }
+      return current.filter((id) => id !== libraryId)
     })
-    console.log('[Home] Loading library media…', { libraryId: id })
-    fetchLibraryMediaWithTimeout(id)
-      .then((items) => {
-        console.log('[Home] Library media loaded', { libraryId: id, count: items.length })
-        if (selectedLibraryIdRef.current === id) {
-          setMediaByLibrary((prev) => ({ ...prev, [id]: items }))
-        }
-      })
-      .catch((err) => {
-        console.error('[Home] Failed to load library media', { libraryId: id, err })
-        if (err instanceof Error) {
-          console.error('[Home] Error name:', err.name, 'message:', err.message, 'stack:', err.stack)
-        }
-        const message = err instanceof Error ? err.message : 'Failed to load'
-        setErrorByLibrary((prev) => ({ ...prev, [id]: message }))
-      })
-      .finally(() => {
-        setLoadingMedia((current) => (current === id ? null : current))
-      })
   }, [])
+
+  const pumpIdentifyQueue = useCallback(async () => {
+    if (identifyPumpRunningRef.current) return
+    identifyPumpRunningRef.current = true
+    try {
+      while (true) {
+        const nextLibraryId = identifyOrderRef.current.find((libraryId) =>
+          queuedLibsRef.current.has(libraryId)
+        )
+        if (nextLibraryId == null) return
+
+        queuedLibsRef.current.delete(nextLibraryId)
+        identifyingLibsRef.current.add(nextLibraryId)
+        setLibraryIdentifying(nextLibraryId, true)
+
+        try {
+          await identifyLibraryInBackground(nextLibraryId)
+          identifiedLibsRef.current.add(nextLibraryId)
+          identifyRetryCountsRef.current.delete(nextLibraryId)
+        } catch {
+          const retries = identifyRetryCountsRef.current.get(nextLibraryId) ?? 0
+          if (retries < 1) {
+            identifyRetryCountsRef.current.set(nextLibraryId, retries + 1)
+            queuedLibsRef.current.add(nextLibraryId)
+          }
+        } finally {
+          identifyingLibsRef.current.delete(nextLibraryId)
+          setLibraryIdentifying(nextLibraryId, false)
+        }
+      }
+    } finally {
+      identifyPumpRunningRef.current = false
+    }
+  }, [identifyLibraryInBackground, setLibraryIdentifying])
 
   useEffect(() => {
-    let cancelled = false
-    setLoadLibsError(null)
-    console.log('[Home] Loading libraries…', { baseUrl: import.meta.env.VITE_BACKEND_URL })
-    listLibraries()
-      .then((list) => {
-        if (!cancelled) {
-          console.log('[Home] Libraries loaded', { count: list.length, libraries: list })
-          setLibraries(list)
-          setSelectedLibraryId((prev) => (prev === null && list.length > 0 ? list[0].id : prev))
-        }
-      })
-      .catch((err) => {
-        console.error('[Home] Failed to load libraries', err)
-        if (err instanceof Error) {
-          console.error('[Home] Error name:', err.name, 'message:', err.message, 'stack:', err.stack)
-        }
-        if (!cancelled) {
-          const message = err instanceof Error ? err.message : 'Failed to load libraries.'
-          setLoadLibsError(message)
-        }
-      })
-      .finally(() => {
-        if (!cancelled) setLoadingLibs(false)
-      })
-    return () => {
-      cancelled = true
+    const identifyableLibraries = libraries
+      .filter((library) => library.type !== 'music')
+      .map((library) => library.id)
+    const activeIds = new Set(identifyableLibraries)
+    identifyOrderRef.current =
+      selectedLibraryId != null && activeIds.has(selectedLibraryId)
+        ? [selectedLibraryId, ...identifyableLibraries.filter((libraryId) => libraryId !== selectedLibraryId)]
+        : identifyableLibraries
+
+    for (const libraryId of [...queuedLibsRef.current]) {
+      if (!activeIds.has(libraryId)) queuedLibsRef.current.delete(libraryId)
     }
-  }, [])
-
-  useEffect(() => {
-    if (selectedLibraryId !== null && mediaByLibrary[selectedLibraryId] === undefined) {
-      loadLibraryMedia(selectedLibraryId)
+    for (const libraryId of [...identifyingLibsRef.current]) {
+      if (!activeIds.has(libraryId)) {
+        identifyingLibsRef.current.delete(libraryId)
+        setLibraryIdentifying(libraryId, false)
+      }
     }
-  }, [selectedLibraryId, mediaByLibrary, loadLibraryMedia])
+    for (const libraryId of [...identifiedLibsRef.current]) {
+      if (!activeIds.has(libraryId)) identifiedLibsRef.current.delete(libraryId)
+    }
+    for (const libraryId of [...identifyRetryCountsRef.current.keys()]) {
+      if (!activeIds.has(libraryId)) identifyRetryCountsRef.current.delete(libraryId)
+    }
 
-  const selectLibrary = useCallback((id: number) => {
-    setSelectedLibraryId(id)
-  }, [])
+    for (const libraryId of identifyOrderRef.current) {
+      if (identifiedLibsRef.current.has(libraryId)) continue
+      if (identifyingLibsRef.current.has(libraryId)) continue
+      if (queuedLibsRef.current.has(libraryId)) continue
+      queuedLibsRef.current.add(libraryId)
+    }
 
-  const selectedLib = libraries.find((l) => l.id === selectedLibraryId)
-  const selectedItems = selectedLibraryId !== null ? (mediaByLibrary[selectedLibraryId] ?? []) : []
-  const selectedLoading = selectedLibraryId !== null && loadingMedia === selectedLibraryId
-  const selectedError = selectedLibraryId !== null ? errorByLibrary[selectedLibraryId] : undefined
-  const selectedGrouped = groupMediaByShow(selectedItems)
+    void pumpIdentifyQueue()
+    setIdentifyingLibraryIds((current) => current.filter((libraryId) => activeIds.has(libraryId)))
+  }, [libraries, pumpIdentifyQueue, selectedLibraryId, setLibraryIdentifying])
+
+  const selectedLibraryIdentifying =
+    selectedLibraryId != null && identifyingLibraryIds.includes(selectedLibraryId)
+
+  const showGroups = useMemo(
+    () => (selectedLib && isTVOrAnime(selectedLib) ? groupMediaByShow(selectedItems) : []),
+    [selectedItems, selectedLib]
+  )
+
+  const showCards = useMemo(
+    () =>
+      showGroups.map((group) => ({
+        key: group.showKey,
+        title: group.showTitle,
+        subtitle: `${group.episodes.length} episode${group.episodes.length === 1 ? '' : 's'}${group.unmatchedCount > 0 ? ` • ${group.unmatchedCount} unmatched` : group.localCount > 0 ? ` • ${group.localCount} local` : ''}`,
+        posterPath: group.posterPath,
+        isIdentifying:
+          selectedLibraryIdentifying &&
+          (group.unmatchedCount > 0 || group.localCount > 0 || !group.posterPath),
+        statusLabel: 'Identifying…',
+        href: `/library/${selectedLibraryId}/show/${encodeURIComponent(group.showKey)}`,
+        onContextMenu: (event: ReactMouseEvent<HTMLDivElement>) => {
+          event.preventDefault()
+          setContextMenu({ x: event.clientX, y: event.clientY, group })
+        },
+      })),
+    [selectedLibraryId, selectedLibraryIdentifying, showGroups]
+  )
+
+  const movieCards = useMemo(
+    () =>
+      selectedItems.map((item) => {
+        const year = item.release_date?.split('-')[0] || item.title.match(/\((\d{4})\)$/)?.[1] || 'Unknown year'
+        const status = item.match_status && item.match_status !== 'identified' ? ` • ${item.match_status}` : ''
+        const rating = item.vote_average ? ` • ${item.vote_average.toFixed(1)}` : ''
+        return {
+          key: String(item.id),
+          title: item.title,
+          subtitle: `${year}${rating}${status}`,
+          posterPath: item.poster_path,
+          isIdentifying:
+            selectedLibraryIdentifying && (item.match_status !== 'identified' || !item.poster_path),
+          statusLabel: 'Identifying…',
+          onClick: () => playMedia(item),
+        }
+      }),
+    [playMedia, selectedItems, selectedLibraryIdentifying]
+  )
 
   return (
-    <div className="app-root">
-      <header className="app-header">
-        <div className="brand-mark">
-          <div className="brand-glyph" />
-          <div className="brand-text">
-            <div className="brand-title">Plum</div>
-            <div className="brand-sub">
-              {user?.email ? (
-                <>
-                  {user.email} ·{' '}
+    <>
+      {loadingLibs ? (
+        <p className="text-sm text-[var(--plum-muted)]">Loading libraries…</p>
+      ) : loadLibsError ? (
+        <p className="text-sm text-[var(--plum-muted)]">
+          Failed to load libraries: {loadLibsError.message}{' '}
+          <button
+            type="button"
+            className="text-[var(--plum-accent)] hover:underline"
+            onClick={() => void refetchLibraries()}
+          >
+            Retry
+          </button>
+        </p>
+      ) : libraries.length === 0 ? (
+        <p className="text-sm text-[var(--plum-muted)]">
+          No libraries yet. Add one in Settings or onboarding.
+        </p>
+      ) : (
+        <>
+          {selectedLib && (
+            <div className="flex min-h-0 flex-1 flex-col">
+              {selectedLoading ? (
+                <p className="text-sm text-[var(--plum-muted)]">Loading…</p>
+              ) : selectedError ? (
+                <p className="text-sm text-[var(--plum-muted)]">
+                  {selectedError.message}{' '}
                   <button
                     type="button"
-                    className="link-button"
-                    onClick={() => logout()}
+                    className="text-[var(--plum-accent)] hover:underline"
+                    onClick={() => void refetchLibraryMedia()}
                   >
-                    Sign out
+                    Retry
                   </button>
-                </>
+                </p>
+              ) : selectedItems.length === 0 ? (
+                <p className="text-sm text-[var(--plum-muted)]">No media in this library yet.</p>
+              ) : isTVOrAnime(selectedLib) ? (
+                <LibraryPosterGrid items={showCards} />
+              ) : selectedLib.type === 'movie' ? (
+                <LibraryPosterGrid items={movieCards} />
               ) : (
-                'Guest mode'
+                <MusicLibraryView
+                  items={selectedItems}
+                  onPlayCollection={playMusicCollection}
+                />
               )}
-            </div>
-          </div>
-        </div>
-      </header>
-      <main className="app-main">
-        <section className="app-content">
-          {loadingLibs ? (
-            <p className="auth-muted">Loading libraries…</p>
-          ) : loadLibsError ? (
-            <p className="auth-muted">
-              Failed to load libraries: {loadLibsError}{' '}
-              <button
-                type="button"
-                className="link-button"
-                onClick={() => {
-                  // Re-trigger initial load flow
-                  setLoadingLibs(true)
-                  setLoadLibsError(null)
-                  listLibraries()
-                    .then((list) => {
-                      setLibraries(list)
-                      setSelectedLibraryId((prev) =>
-                        prev === null && list.length > 0 ? list[0].id : prev,
-                      )
-                    })
-                    .catch((err) => {
-                      console.error(err)
-                      const message =
-                        err instanceof Error ? err.message : 'Failed to load libraries.'
-                      setLoadLibsError(message)
-                    })
-                    .finally(() => {
-                      setLoadingLibs(false)
-                    })
-                }}
-              >
-                Retry
-              </button>
-            </p>
-          ) : libraries.length === 0 ? (
-            <p className="auth-muted">
-              No libraries yet. Once your server can talk to the library API, they’ll appear here.
-            </p>
-          ) : (
-            <>
-              <div className="library-tabs" role="tablist">
-                {libraries.map((lib) => (
+              {contextMenu && selectedLibraryId != null && (
+                <div
+                  ref={contextMenuRef}
+                  className="fixed z-50 min-w-[10rem] rounded-[var(--radius-md)] border border-[var(--plum-border)] bg-[var(--plum-panel)] py-1 text-[var(--plum-text)] shadow-lg"
+                  style={{ left: contextMenu.x, top: contextMenu.y }}
+                >
                   <button
-                    key={lib.id}
                     type="button"
-                    role="tab"
-                    aria-selected={selectedLibraryId === lib.id}
-                    className={`library-tab ${selectedLibraryId === lib.id ? 'active' : ''}`}
-                    onClick={() => selectLibrary(lib.id)}
+                    className="w-full px-3 py-2 text-left text-sm hover:bg-[var(--plum-bg)]"
+                    onClick={() => {
+                      refreshShowMutation.mutate(
+                        { libraryId: selectedLibraryId, showKey: contextMenu.group.showKey },
+                        { onSettled: closeContextMenu }
+                      )
+                    }}
+                    disabled={refreshShowMutation.isPending}
                   >
-                    {getLibraryTabLabel(lib)}
+                    Refresh metadata
                   </button>
-                ))}
-              </div>
-              {selectedLib && (
-                <div className="library-content">
-                  {selectedLoading ? (
-                    <p className="auth-muted">Loading…</p>
-                  ) : selectedError ? (
-                    <p className="auth-muted">
-                      {selectedError}{' '}
-                      <button
-                        type="button"
-                        className="link-button"
-                        onClick={() => loadLibraryMedia(selectedLibraryId!)}
-                      >
-                        Retry
-                      </button>
-                    </p>
-                  ) : selectedItems.length === 0 ? (
-                    <p className="auth-muted">No media in this library yet.</p>
-                  ) : (
-                    <div className="shows-list">
-                      {Array.from(selectedGrouped.entries()).map(([showName, episodes]) => (
-                        <div key={showName} className="show-group">
-                          <div className="show-name">{showName}</div>
-                          <ul className="episodes-list">
-                            {episodes.map((ep) => (
-                              <li key={ep.id} className="episode-row">
-                                <span className="episode-title" title={ep.title}>
-                                  {ep.title}
-                                </span>
-                              </li>
-                            ))}
-                          </ul>
-                        </div>
-                      ))}
-                    </div>
-                  )}
+                  <button
+                    type="button"
+                    className="w-full px-3 py-2 text-left text-sm hover:bg-[var(--plum-bg)]"
+                    onClick={() => {
+                      navigate(
+                        `/library/${selectedLibraryId}/show/${encodeURIComponent(contextMenu.group.showKey)}`
+                      )
+                      closeContextMenu()
+                    }}
+                  >
+                    Edit show
+                  </button>
+                  <button
+                    type="button"
+                    className="w-full px-3 py-2 text-left text-sm hover:bg-[var(--plum-bg)]"
+                    onClick={() => {
+                      setIdentifyGroup(contextMenu.group)
+                      closeContextMenu()
+                    }}
+                  >
+                    Identify…
+                  </button>
                 </div>
               )}
-            </>
+              {identifyGroup && selectedLibraryId != null && (
+                <IdentifyShowDialog
+                  open={!!identifyGroup}
+                  onOpenChange={(open) => !open && setIdentifyGroup(null)}
+                  libraryId={selectedLibraryId}
+                  showKey={identifyGroup.showKey}
+                  showTitle={identifyGroup.showTitle}
+                  onSuccess={() => void refetchLibraryMedia()}
+                />
+              )}
+            </div>
           )}
-        </section>
-      </main>
-    </div>
+        </>
+      )}
+    </>
   )
 }

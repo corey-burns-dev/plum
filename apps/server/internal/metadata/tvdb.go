@@ -24,6 +24,10 @@ type TVDBClient struct {
 	exp   time.Time
 }
 
+func (c *TVDBClient) ProviderName() string {
+	return "tvdb"
+}
+
 // NewTVDBClient returns a TVDB client. If apiKey is empty, all methods will return no results.
 func NewTVDBClient(apiKey, pin string) *TVDBClient {
 	return &TVDBClient{APIKey: apiKey, Pin: pin}
@@ -170,9 +174,9 @@ type tvdbSeriesEpisodesResponse struct {
 }
 
 type tvdbSeries struct {
-	ID        int    `json:"id"`
-	Name      string `json:"name"`
-	Image     string `json:"image"`
+	ID         int    `json:"id"`
+	Name       string `json:"name"`
+	Image      string `json:"image"`
 	FirstAired string `json:"firstAired"`
 }
 
@@ -244,6 +248,10 @@ func (c *TVDBClient) GetEpisode(ctx context.Context, seriesID string, season, ep
 	if posterURL != "" && posterURL[0] == '/' {
 		posterURL = "https://artworks.thetvdb.com" + posterURL
 	}
+	externalID := seriesID
+	if series != nil && series.ID > 0 {
+		externalID = strconv.Itoa(series.ID)
+	}
 	return &MatchResult{
 		Title:       title,
 		Overview:    ep.Overview,
@@ -251,6 +259,6 @@ func (c *TVDBClient) GetEpisode(ctx context.Context, seriesID string, season, ep
 		BackdropURL: posterURL,
 		ReleaseDate: ep.Aired,
 		Provider:    "tvdb",
-		ExternalID:  strconv.Itoa(ep.ID),
+		ExternalID:  externalID,
 	}, nil
 }

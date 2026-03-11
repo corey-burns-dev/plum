@@ -10,12 +10,14 @@ services:
       - PLUM_ADDR=${PLUM_ADDR:-:8080}
       - PLUM_DATABASE_URL=/data/plum.db
       - TMDB_API_KEY=${TMDB_API_KEY}
+      - TVDB_API_KEY=${TVDB_API_KEY}
     volumes:
       - .:/app
       - plum_data:/data
-      # Bind host folders straight to /tv, /movies, /music — add libraries with paths /tv, /movies, /music
+      # Bind host folders straight to /tv, /movies, /anime, /music — add libraries with those exact paths in Plum
       - /home/cburns/Videos/tv:/tv:ro
       - /home/cburns/Videos/movies:/movies:ro
+      - /home/cburns/Videos/anime:/anime:ro
       - /home/cburns/Videos/music:/music:ro
     ports:
       - "8080:8080"

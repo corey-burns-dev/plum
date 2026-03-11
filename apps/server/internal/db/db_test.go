@@ -3,6 +3,7 @@ package db
 import (
 	"context"
 	"database/sql"
+	"fmt"
 	"os"
 	"path/filepath"
 	"testing"
@@ -27,6 +28,8 @@ func newTestDB(t *testing.T) *sql.DB {
 	if err := db.Ping(); err != nil {
 		t.Fatalf("ping sqlite: %v", err)
 	}
+	db.SetMaxOpenConns(1)
+	db.SetMaxIdleConns(1)
 	if _, err := db.Exec("PRAGMA foreign_keys=ON"); err != nil {
 		t.Fatalf("pragma foreign_keys: %v", err)
 	}
@@ -56,6 +59,20 @@ func getLibraryID(t *testing.T, db *sql.DB, typ string) int {
 	err := db.QueryRow(`SELECT id FROM libraries WHERE type = ? LIMIT 1`, typ).Scan(&id)
 	if err != nil {
 		t.Fatalf("get library id for %s: %v", typ, err)
+	}
+	return id
+}
+
+func createLibraryForTest(t *testing.T, db *sql.DB, typ, path string) int {
+	t.Helper()
+	var userID int
+	if err := db.QueryRow(`SELECT id FROM users LIMIT 1`).Scan(&userID); err != nil {
+		t.Fatalf("get user id: %v", err)
+	}
+	var id int
+	if err := db.QueryRow(`INSERT INTO libraries (user_id, name, type, path, created_at) VALUES (?, ?, ?, ?, ?) RETURNING id`,
+		userID, fmt.Sprintf("%s library", typ), typ, path, time.Now().UTC()).Scan(&id); err != nil {
+		t.Fatalf("create library %s: %v", typ, err)
 	}
 	return id
 }
@@ -98,16 +115,16 @@ func TestHandleScanLibrary_RecursesSubdirectories(t *testing.T) {
 	if err != nil {
 		t.Fatalf("scan tv library: %v", err)
 	}
-	if addedTV != 2 {
-		t.Fatalf("expected 2 tv items added, got %d", addedTV)
+	if addedTV.Added != 2 {
+		t.Fatalf("expected 2 tv items added, got %d", addedTV.Added)
 	}
 
 	addedMovies, err := HandleScanLibrary(ctx, db, movieRoot, LibraryTypeMovie, movieLibID, nil)
 	if err != nil {
 		t.Fatalf("scan movie library: %v", err)
 	}
-	if addedMovies != 1 {
-		t.Fatalf("expected 1 movie item added, got %d", addedMovies)
+	if addedMovies.Added != 1 {
+		t.Fatalf("expected 1 movie item added, got %d", addedMovies.Added)
 	}
 
 	var countTV, countMovies int
@@ -168,16 +185,16 @@ func TestHandleScanLibrary_IsIdempotent(t *testing.T) {
 	if err != nil {
 		t.Fatalf("first scan: %v", err)
 	}
-	if addedFirst != 1 {
-		t.Fatalf("expected 1 item on first scan, got %d", addedFirst)
+	if addedFirst.Added != 1 {
+		t.Fatalf("expected 1 item on first scan, got %d", addedFirst.Added)
 	}
 
 	addedSecond, err := HandleScanLibrary(ctx, db, filepath.Join(tmp, "SomeShow"), LibraryTypeTV, tvLibID, nil)
 	if err != nil {
 		t.Fatalf("second scan: %v", err)
 	}
-	if addedSecond != 0 {
-		t.Fatalf("expected 0 items on second scan, got %d", addedSecond)
+	if addedSecond.Added != 0 {
+		t.Fatalf("expected 0 items on second scan, got %d", addedSecond.Added)
 	}
 
 	var count int
@@ -192,6 +209,7 @@ func TestHandleScanLibrary_IsIdempotent(t *testing.T) {
 // mockIdentifier returns fixed metadata for tests.
 type mockIdentifier struct {
 	tvResult    *metadata.MatchResult
+	animeResult *metadata.MatchResult
 	movieResult *metadata.MatchResult
 }
 
@@ -199,8 +217,39 @@ func (m *mockIdentifier) IdentifyTV(_ context.Context, _ metadata.MediaInfo) *me
 	return m.tvResult
 }
 
+func (m *mockIdentifier) IdentifyAnime(_ context.Context, _ metadata.MediaInfo) *metadata.MatchResult {
+	return m.animeResult
+}
+
 func (m *mockIdentifier) IdentifyMovie(_ context.Context, _ metadata.MediaInfo) *metadata.MatchResult {
 	return m.movieResult
+}
+
+type funcIdentifier struct {
+	tv    func(metadata.MediaInfo) *metadata.MatchResult
+	anime func(metadata.MediaInfo) *metadata.MatchResult
+	movie func(metadata.MediaInfo) *metadata.MatchResult
+}
+
+func (f *funcIdentifier) IdentifyTV(_ context.Context, info metadata.MediaInfo) *metadata.MatchResult {
+	if f.tv == nil {
+		return nil
+	}
+	return f.tv(info)
+}
+
+func (f *funcIdentifier) IdentifyAnime(_ context.Context, info metadata.MediaInfo) *metadata.MatchResult {
+	if f.anime == nil {
+		return nil
+	}
+	return f.anime(info)
+}
+
+func (f *funcIdentifier) IdentifyMovie(_ context.Context, info metadata.MediaInfo) *metadata.MatchResult {
+	if f.movie == nil {
+		return nil
+	}
+	return f.movie(info)
 }
 
 // TestHandleScanLibrary_WithMockIdentifier verifies that when a mock identifier returns a match,
@@ -241,8 +290,8 @@ func TestHandleScanLibrary_WithMockIdentifier(t *testing.T) {
 	if err != nil {
 		t.Fatalf("scan with mock: %v", err)
 	}
-	if added != 1 {
-		t.Fatalf("expected 1 item added, got %d", added)
+	if added.Added != 1 {
+		t.Fatalf("expected 1 item added, got %d", added.Added)
 	}
 
 	var title, overview string
@@ -255,5 +304,600 @@ func TestHandleScanLibrary_WithMockIdentifier(t *testing.T) {
 	}
 	if overview != "Mock overview for testing." {
 		t.Errorf("overview: got %q", overview)
+	}
+}
+
+func TestHandleScanLibrary_RefreshesMetadataWhenExplicitIDAppears(t *testing.T) {
+	db := newTestDB(t)
+	tvLibID := getLibraryID(t, db, "tv")
+
+	tmp := t.TempDir()
+	showRoot := filepath.Join(tmp, "Show")
+	seasonRoot := filepath.Join(showRoot, "Season 1")
+	if err := os.MkdirAll(seasonRoot, 0o755); err != nil {
+		t.Fatalf("mkdir tree: %v", err)
+	}
+	file := filepath.Join(seasonRoot, "Show.S01E01.mkv")
+	if err := os.WriteFile(file, []byte("x"), 0o644); err != nil {
+		t.Fatalf("write fake media: %v", err)
+	}
+
+	prevSkip := SkipFFprobeInScan
+	SkipFFprobeInScan = true
+	defer func() { SkipFFprobeInScan = prevSkip }()
+
+	ctx := context.Background()
+	initial := &mockIdentifier{
+		tvResult: &metadata.MatchResult{
+			Title:      "Wrong Show - S01E01 - Wrong",
+			Overview:   "wrong",
+			Provider:   "tmdb",
+			ExternalID: "111",
+		},
+	}
+	if _, err := HandleScanLibrary(ctx, db, tmp, LibraryTypeTV, tvLibID, initial); err != nil {
+		t.Fatalf("first scan: %v", err)
+	}
+
+	nfo := `<tvshow><uniqueid type="tmdb">222</uniqueid></tvshow>`
+	if err := os.WriteFile(filepath.Join(showRoot, "tvshow.nfo"), []byte(nfo), 0o644); err != nil {
+		t.Fatalf("write nfo: %v", err)
+	}
+
+	refresh := &funcIdentifier{
+		tv: func(info metadata.MediaInfo) *metadata.MatchResult {
+			if info.TMDBID != 222 {
+				t.Fatalf("expected TMDBID 222 from nfo, got %d", info.TMDBID)
+			}
+			return &metadata.MatchResult{
+				Title:      "Right Show - S01E01 - Pilot",
+				Overview:   "right",
+				Provider:   "tmdb",
+				ExternalID: "222",
+			}
+		},
+	}
+	if _, err := HandleScanLibrary(ctx, db, tmp, LibraryTypeTV, tvLibID, refresh); err != nil {
+		t.Fatalf("second scan: %v", err)
+	}
+
+	var title, overview string
+	var tmdbID int
+	err := db.QueryRow(`SELECT title, overview, COALESCE(tmdb_id, 0) FROM tv_episodes WHERE library_id = ? AND path = ?`, tvLibID, file).Scan(&title, &overview, &tmdbID)
+	if err != nil {
+		t.Fatalf("query stored row: %v", err)
+	}
+	if title != "Right Show - S01E01 - Pilot" {
+		t.Fatalf("title = %q", title)
+	}
+	if overview != "right" {
+		t.Fatalf("overview = %q", overview)
+	}
+	if tmdbID != 222 {
+		t.Fatalf("tmdb_id = %d", tmdbID)
+	}
+}
+
+func TestListIdentifiableByLibrary_IncludesRowsWithMetadata(t *testing.T) {
+	db := newTestDB(t)
+	tvLibID := getLibraryID(t, db, "tv")
+
+	tmp := t.TempDir()
+	showRoot := filepath.Join(tmp, "Show", "Season 1")
+	if err := os.MkdirAll(showRoot, 0o755); err != nil {
+		t.Fatalf("mkdir tree: %v", err)
+	}
+	file := filepath.Join(showRoot, "Show.S01E01.mkv")
+	if err := os.WriteFile(file, []byte("x"), 0o644); err != nil {
+		t.Fatalf("write fake media: %v", err)
+	}
+
+	prevSkip := SkipFFprobeInScan
+	SkipFFprobeInScan = true
+	defer func() { SkipFFprobeInScan = prevSkip }()
+
+	ctx := context.Background()
+	mock := &mockIdentifier{
+		tvResult: &metadata.MatchResult{
+			Title:      "Show - S01E01 - Pilot",
+			Provider:   "tmdb",
+			ExternalID: "333",
+		},
+	}
+	if _, err := HandleScanLibrary(ctx, db, filepath.Join(tmp, "Show"), LibraryTypeTV, tvLibID, mock); err != nil {
+		t.Fatalf("scan: %v", err)
+	}
+
+	rows, err := ListIdentifiableByLibrary(db, tvLibID)
+	if err != nil {
+		t.Fatalf("list rows: %v", err)
+	}
+	if len(rows) != 1 {
+		t.Fatalf("expected 1 row, got %d", len(rows))
+	}
+	if rows[0].Path != file {
+		t.Fatalf("path = %q", rows[0].Path)
+	}
+}
+
+func TestHandleScanLibrary_SkipsMovieExtrasAndSamples(t *testing.T) {
+	db := newTestDB(t)
+	movieLibID := getLibraryID(t, db, "movie")
+
+	tmp := t.TempDir()
+	movieRoot := filepath.Join(tmp, "Movie (2010)")
+	if err := os.MkdirAll(filepath.Join(movieRoot, "Extras"), 0o755); err != nil {
+		t.Fatalf("mkdir movie tree: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(movieRoot, "movie.mkv"), []byte("x"), 0o644); err != nil {
+		t.Fatalf("write movie: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(movieRoot, "Extras", "behind-the-scenes.mkv"), []byte("x"), 0o644); err != nil {
+		t.Fatalf("write extra: %v", err)
+	}
+
+	prevSkip := SkipFFprobeInScan
+	SkipFFprobeInScan = true
+	defer func() { SkipFFprobeInScan = prevSkip }()
+
+	result, err := HandleScanLibrary(context.Background(), db, movieRoot, LibraryTypeMovie, movieLibID, nil)
+	if err != nil {
+		t.Fatalf("scan movies: %v", err)
+	}
+	if result.Added != 1 || result.Skipped != 1 {
+		t.Fatalf("unexpected scan result: %+v", result)
+	}
+}
+
+func TestHandleScanLibrary_ImportsMovieLayouts(t *testing.T) {
+	db := newTestDB(t)
+	movieLibID := getLibraryID(t, db, "movie")
+
+	prevSkip := SkipFFprobeInScan
+	SkipFFprobeInScan = true
+	defer func() { SkipFFprobeInScan = prevSkip }()
+
+	cases := []struct {
+		name      string
+		setup     func(root string) (string, error)
+		wantTitle string
+	}{
+		{
+			name: "file in root",
+			setup: func(root string) (string, error) {
+				path := filepath.Join(root, "Movie (2010).mkv")
+				return path, os.WriteFile(path, []byte("x"), 0o644)
+			},
+			wantTitle: "Movie",
+		},
+		{
+			name: "movie in own folder",
+			setup: func(root string) (string, error) {
+				dir := filepath.Join(root, "Movie (2010)")
+				if err := os.MkdirAll(dir, 0o755); err != nil {
+					return "", err
+				}
+				path := filepath.Join(dir, "movie.mkv")
+				return path, os.WriteFile(path, []byte("x"), 0o644)
+			},
+			wantTitle: "Movie",
+		},
+		{
+			name: "collection disc layout",
+			setup: func(root string) (string, error) {
+				dir := filepath.Join(root, "Collection", "Movie (2010)", "Disc 1")
+				if err := os.MkdirAll(dir, 0o755); err != nil {
+					return "", err
+				}
+				path := filepath.Join(dir, "movie.mkv")
+				return path, os.WriteFile(path, []byte("x"), 0o644)
+			},
+			wantTitle: "Movie",
+		},
+		{
+			name: "noisy release filename in folder",
+			setup: func(root string) (string, error) {
+				dir := filepath.Join(root, "Die My Love (2025)")
+				if err := os.MkdirAll(dir, 0o755); err != nil {
+					return "", err
+				}
+				path := filepath.Join(dir, "Die My Love 2025 BluRay 1080p DD 5 1 x264-BHDStudio.mp4")
+				return path, os.WriteFile(path, []byte("x"), 0o644)
+			},
+			wantTitle: "Die My Love",
+		},
+		{
+			name: "release prefix in root filename",
+			setup: func(root string) (string, error) {
+				path := filepath.Join(root, "[MrManager] Riding Bean (1989) BDRemux (Dual Audio, Special Features).mkv")
+				return path, os.WriteFile(path, []byte("x"), 0o644)
+			},
+			wantTitle: "Riding Bean",
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			tmp := t.TempDir()
+			path, err := tc.setup(tmp)
+			if err != nil {
+				t.Fatalf("setup: %v", err)
+			}
+			result, err := HandleScanLibrary(context.Background(), db, tmp, LibraryTypeMovie, movieLibID, nil)
+			if err != nil {
+				t.Fatalf("scan: %v", err)
+			}
+			if result.Added != 1 {
+				t.Fatalf("unexpected scan result: %+v", result)
+			}
+			var title string
+			if err := db.QueryRow(`SELECT title FROM movies WHERE library_id = ? AND path = ?`, movieLibID, path).Scan(&title); err != nil {
+				t.Fatalf("query row: %v", err)
+			}
+			if title != tc.wantTitle {
+				t.Fatalf("title = %q", title)
+			}
+			if _, err := db.Exec(`DELETE FROM media_global`); err != nil {
+				t.Fatalf("clear media_global: %v", err)
+			}
+			if _, err := db.Exec(`DELETE FROM movies WHERE library_id = ?`, movieLibID); err != nil {
+				t.Fatalf("clear movies: %v", err)
+			}
+		})
+	}
+}
+
+func TestHandleScanLibrary_ImportsAnimeSeasonFolderWithSuffix(t *testing.T) {
+	db := newTestDB(t)
+	animeLibID := createLibraryForTest(t, db, LibraryTypeAnime, "/anime")
+
+	tmp := t.TempDir()
+	root := filepath.Join(tmp, "D", "Season 01 [127]")
+	if err := os.MkdirAll(root, 0o755); err != nil {
+		t.Fatalf("mkdir anime tree: %v", err)
+	}
+	file := filepath.Join(root, "Dragon Ball (1986) - S01E01 - Secret of the Dragon Balls [SDTV][AAC 2.0][x265].mkv")
+	if err := os.WriteFile(file, []byte("x"), 0o644); err != nil {
+		t.Fatalf("write anime file: %v", err)
+	}
+
+	prevSkip := SkipFFprobeInScan
+	SkipFFprobeInScan = true
+	defer func() { SkipFFprobeInScan = prevSkip }()
+
+	result, err := HandleScanLibrary(context.Background(), db, filepath.Join(tmp, "D"), LibraryTypeAnime, animeLibID, nil)
+	if err != nil {
+		t.Fatalf("scan anime: %v", err)
+	}
+	if result.Added != 1 {
+		t.Fatalf("unexpected scan result: %+v", result)
+	}
+
+	var title string
+	var season, episode int
+	if err := db.QueryRow(`SELECT title, season, episode FROM anime_episodes WHERE library_id = ? AND path = ?`, animeLibID, file).Scan(&title, &season, &episode); err != nil {
+		t.Fatalf("query anime row: %v", err)
+	}
+	if title != "Dragon Ball - S01E01" {
+		t.Fatalf("title = %q", title)
+	}
+	if season != 1 || episode != 1 {
+		t.Fatalf("season=%d episode=%d", season, episode)
+	}
+}
+
+func TestHandleScanLibrary_ImportsAbsoluteEpisodeAnimeAsUnmatched(t *testing.T) {
+	db := newTestDB(t)
+	animeLibID := createLibraryForTest(t, db, LibraryTypeAnime, "/anime")
+
+	tmp := t.TempDir()
+	root := filepath.Join(tmp, "Frieren")
+	if err := os.MkdirAll(root, 0o755); err != nil {
+		t.Fatalf("mkdir anime tree: %v", err)
+	}
+	file := filepath.Join(root, "[SubsPlease] Frieren - 12 [1080p].mkv")
+	if err := os.WriteFile(file, []byte("x"), 0o644); err != nil {
+		t.Fatalf("write anime file: %v", err)
+	}
+
+	prevSkip := SkipFFprobeInScan
+	SkipFFprobeInScan = true
+	defer func() { SkipFFprobeInScan = prevSkip }()
+
+	result, err := HandleScanLibrary(context.Background(), db, root, LibraryTypeAnime, animeLibID, &funcIdentifier{})
+	if err != nil {
+		t.Fatalf("scan anime: %v", err)
+	}
+	if result.Added != 1 || result.Unmatched != 1 {
+		t.Fatalf("unexpected scan result: %+v", result)
+	}
+
+	var title, status string
+	var season, episode int
+	if err := db.QueryRow(`SELECT title, match_status, season, episode FROM anime_episodes WHERE library_id = ? AND path = ?`, animeLibID, file).Scan(&title, &status, &season, &episode); err != nil {
+		t.Fatalf("query anime row: %v", err)
+	}
+	if title != "Frieren - S00E00" && title != "Frieren" {
+		t.Fatalf("title = %q", title)
+	}
+	if status != MatchStatusUnmatched {
+		t.Fatalf("status = %q", status)
+	}
+	if season != 0 || episode != 0 {
+		t.Fatalf("season=%d episode=%d", season, episode)
+	}
+}
+
+func TestHandleScanLibrary_UsesAnimeIdentifier(t *testing.T) {
+	db := newTestDB(t)
+	animeLibID := createLibraryForTest(t, db, LibraryTypeAnime, "/anime")
+
+	tmp := t.TempDir()
+	root := filepath.Join(tmp, "Frieren", "Season 1")
+	if err := os.MkdirAll(root, 0o755); err != nil {
+		t.Fatalf("mkdir anime tree: %v", err)
+	}
+	file := filepath.Join(root, "Frieren - S01E12.mkv")
+	if err := os.WriteFile(file, []byte("x"), 0o644); err != nil {
+		t.Fatalf("write anime file: %v", err)
+	}
+
+	prevSkip := SkipFFprobeInScan
+	SkipFFprobeInScan = true
+	defer func() { SkipFFprobeInScan = prevSkip }()
+
+	identifier := &funcIdentifier{
+		anime: func(info metadata.MediaInfo) *metadata.MatchResult {
+			if info.Title != "frieren" {
+				t.Fatalf("title = %q", info.Title)
+			}
+			if info.Season != 1 || info.Episode != 12 {
+				t.Fatalf("unexpected anime info: %+v", info)
+			}
+			return &metadata.MatchResult{
+				Title:      "Frieren - S01E12 - Episode",
+				Provider:   "tmdb",
+				ExternalID: "777",
+			}
+		},
+	}
+
+	result, err := HandleScanLibrary(context.Background(), db, filepath.Join(tmp, "Frieren"), LibraryTypeAnime, animeLibID, identifier)
+	if err != nil {
+		t.Fatalf("scan anime: %v", err)
+	}
+	if result.Added != 1 {
+		t.Fatalf("unexpected scan result: %+v", result)
+	}
+
+	var title string
+	var tmdbID int
+	if err := db.QueryRow(`SELECT title, COALESCE(tmdb_id, 0) FROM anime_episodes WHERE library_id = ? AND path = ?`, animeLibID, file).Scan(&title, &tmdbID); err != nil {
+		t.Fatalf("query anime row: %v", err)
+	}
+	if title != "Frieren - S01E12 - Episode" {
+		t.Fatalf("title = %q", title)
+	}
+	if tmdbID != 777 {
+		t.Fatalf("tmdb_id = %d", tmdbID)
+	}
+}
+
+func TestHandleScanLibrary_ReidentifiesAnimeRowsThatOnlyHaveTVDBMetadata(t *testing.T) {
+	db := newTestDB(t)
+	animeLibID := createLibraryForTest(t, db, LibraryTypeAnime, "/anime")
+
+	tmp := t.TempDir()
+	root := filepath.Join(tmp, "Frieren", "Season 1")
+	if err := os.MkdirAll(root, 0o755); err != nil {
+		t.Fatalf("mkdir anime tree: %v", err)
+	}
+	file := filepath.Join(root, "Frieren - S01E12.mkv")
+	if err := os.WriteFile(file, []byte("x"), 0o644); err != nil {
+		t.Fatalf("write anime file: %v", err)
+	}
+
+	prevSkip := SkipFFprobeInScan
+	SkipFFprobeInScan = true
+	defer func() { SkipFFprobeInScan = prevSkip }()
+
+	first := &funcIdentifier{
+		anime: func(info metadata.MediaInfo) *metadata.MatchResult {
+			return &metadata.MatchResult{
+				Title:      "Frieren - S01E12 - Episode",
+				Provider:   "tvdb",
+				ExternalID: "series-55",
+			}
+		},
+	}
+	if _, err := HandleScanLibrary(context.Background(), db, filepath.Join(tmp, "Frieren"), LibraryTypeAnime, animeLibID, first); err != nil {
+		t.Fatalf("first scan anime: %v", err)
+	}
+
+	second := &funcIdentifier{
+		anime: func(info metadata.MediaInfo) *metadata.MatchResult {
+			return &metadata.MatchResult{
+				Title:      "Frieren - S01E12 - Episode",
+				Provider:   "tmdb",
+				ExternalID: "777",
+			}
+		},
+	}
+	if _, err := HandleScanLibrary(context.Background(), db, filepath.Join(tmp, "Frieren"), LibraryTypeAnime, animeLibID, second); err != nil {
+		t.Fatalf("second scan anime: %v", err)
+	}
+
+	var tmdbID int
+	var tvdbID sql.NullString
+	if err := db.QueryRow(`SELECT COALESCE(tmdb_id, 0), tvdb_id FROM anime_episodes WHERE library_id = ? AND path = ?`, animeLibID, file).Scan(&tmdbID, &tvdbID); err != nil {
+		t.Fatalf("query anime row: %v", err)
+	}
+	if tmdbID != 777 {
+		t.Fatalf("tmdb_id = %d", tmdbID)
+	}
+	if tvdbID.Valid {
+		t.Fatalf("tvdb_id = %q", tvdbID.String)
+	}
+}
+
+func TestHandleScanLibrary_StoresUnmatchedStatus(t *testing.T) {
+	db := newTestDB(t)
+	tvLibID := getLibraryID(t, db, "tv")
+
+	tmp := t.TempDir()
+	root := filepath.Join(tmp, "Show", "Season 1")
+	if err := os.MkdirAll(root, 0o755); err != nil {
+		t.Fatalf("mkdir tree: %v", err)
+	}
+	file := filepath.Join(root, "Show.S01E01.mkv")
+	if err := os.WriteFile(file, []byte("x"), 0o644); err != nil {
+		t.Fatalf("write fake media: %v", err)
+	}
+
+	prevSkip := SkipFFprobeInScan
+	SkipFFprobeInScan = true
+	defer func() { SkipFFprobeInScan = prevSkip }()
+
+	result, err := HandleScanLibrary(context.Background(), db, filepath.Join(tmp, "Show"), LibraryTypeTV, tvLibID, &funcIdentifier{})
+	if err != nil {
+		t.Fatalf("scan: %v", err)
+	}
+	if result.Unmatched != 1 {
+		t.Fatalf("result = %+v", result)
+	}
+	var status string
+	if err := db.QueryRow(`SELECT match_status FROM tv_episodes WHERE library_id = ? AND path = ?`, tvLibID, file).Scan(&status); err != nil {
+		t.Fatalf("query status: %v", err)
+	}
+	if status != MatchStatusUnmatched {
+		t.Fatalf("status = %q", status)
+	}
+}
+
+func TestHandleScanLibrary_PrunesRemovedFiles(t *testing.T) {
+	db := newTestDB(t)
+	tvLibID := getLibraryID(t, db, "tv")
+
+	tmp := t.TempDir()
+	root := filepath.Join(tmp, "Show", "Season 1")
+	if err := os.MkdirAll(root, 0o755); err != nil {
+		t.Fatalf("mkdir tree: %v", err)
+	}
+	file := filepath.Join(root, "Show.S01E01.mkv")
+	if err := os.WriteFile(file, []byte("x"), 0o644); err != nil {
+		t.Fatalf("write fake media: %v", err)
+	}
+
+	prevSkip := SkipFFprobeInScan
+	SkipFFprobeInScan = true
+	defer func() { SkipFFprobeInScan = prevSkip }()
+
+	if _, err := HandleScanLibrary(context.Background(), db, filepath.Join(tmp, "Show"), LibraryTypeTV, tvLibID, nil); err != nil {
+		t.Fatalf("first scan: %v", err)
+	}
+	if err := os.Remove(file); err != nil {
+		t.Fatalf("remove file: %v", err)
+	}
+	result, err := HandleScanLibrary(context.Background(), db, filepath.Join(tmp, "Show"), LibraryTypeTV, tvLibID, nil)
+	if err != nil {
+		t.Fatalf("second scan: %v", err)
+	}
+	if result.Removed != 1 {
+		t.Fatalf("expected one removed file, got %+v", result)
+	}
+	var count int
+	if err := db.QueryRow(`SELECT COUNT(*) FROM tv_episodes WHERE library_id = ?`, tvLibID).Scan(&count); err != nil {
+		t.Fatalf("count rows: %v", err)
+	}
+	if count != 0 {
+		t.Fatalf("expected 0 rows after prune, got %d", count)
+	}
+}
+
+func TestHandleScanLibrary_ImportsMusicExtensionsAndTags(t *testing.T) {
+	db := newTestDB(t)
+	musicLibID := createLibraryForTest(t, db, LibraryTypeMusic, "/music")
+
+	tmp := t.TempDir()
+	root := filepath.Join(tmp, "Artist", "Album", "Disc 2")
+	if err := os.MkdirAll(root, 0o755); err != nil {
+		t.Fatalf("mkdir music tree: %v", err)
+	}
+	file := filepath.Join(root, "01 - Placeholder.flac")
+	if err := os.WriteFile(file, []byte("x"), 0o644); err != nil {
+		t.Fatalf("write fake audio: %v", err)
+	}
+
+	prevSkip := SkipFFprobeInScan
+	prevReadAudio := readAudioMetadata
+	SkipFFprobeInScan = false
+	readAudioMetadata = func(_ context.Context, _ string) (metadata.MusicMetadata, int, error) {
+		return metadata.MusicMetadata{
+			Title:       "Tagged Track",
+			Artist:      "Tagged Artist",
+			Album:       "Tagged Album",
+			AlbumArtist: "Tagged Album Artist",
+			DiscNumber:  2,
+			TrackNumber: 1,
+			ReleaseYear: 2024,
+		}, 245, nil
+	}
+	defer func() {
+		SkipFFprobeInScan = prevSkip
+		readAudioMetadata = prevReadAudio
+	}()
+
+	result, err := HandleScanLibrary(context.Background(), db, filepath.Join(tmp, "Artist"), LibraryTypeMusic, musicLibID, nil)
+	if err != nil {
+		t.Fatalf("scan music: %v", err)
+	}
+	if result.Added != 1 {
+		t.Fatalf("unexpected scan result: %+v", result)
+	}
+
+	var title, artist, album, albumArtist, status string
+	var duration, discNumber, trackNumber, releaseYear int
+	if err := db.QueryRow(`SELECT title, artist, album, album_artist, duration, disc_number, track_number, release_year, match_status FROM music_tracks WHERE library_id = ?`, musicLibID).
+		Scan(&title, &artist, &album, &albumArtist, &duration, &discNumber, &trackNumber, &releaseYear, &status); err != nil {
+		t.Fatalf("query music row: %v", err)
+	}
+	if title != "Tagged Track" || artist != "Tagged Artist" || album != "Tagged Album" || albumArtist != "Tagged Album Artist" {
+		t.Fatalf("unexpected music metadata: title=%q artist=%q album=%q albumArtist=%q", title, artist, album, albumArtist)
+	}
+	if duration != 245 || discNumber != 2 || trackNumber != 1 || releaseYear != 2024 {
+		t.Fatalf("unexpected numeric metadata: duration=%d disc=%d track=%d year=%d", duration, discNumber, trackNumber, releaseYear)
+	}
+	if status != MatchStatusLocal {
+		t.Fatalf("status = %q", status)
+	}
+}
+
+func TestHandleScanLibrary_ImportsSupportedMusicExtensions(t *testing.T) {
+	db := newTestDB(t)
+	musicLibID := createLibraryForTest(t, db, LibraryTypeMusic, "/music")
+
+	tmp := t.TempDir()
+	root := filepath.Join(tmp, "Artist", "Album")
+	if err := os.MkdirAll(root, 0o755); err != nil {
+		t.Fatalf("mkdir music tree: %v", err)
+	}
+	extensions := []string{".mp3", ".flac", ".m4a", ".aac", ".ogg", ".opus", ".wav", ".alac"}
+	for i, ext := range extensions {
+		path := filepath.Join(root, fmt.Sprintf("Track-%d%s", i+1, ext))
+		if err := os.WriteFile(path, []byte("x"), 0o644); err != nil {
+			t.Fatalf("write %s: %v", ext, err)
+		}
+	}
+
+	prevSkip := SkipFFprobeInScan
+	SkipFFprobeInScan = true
+	defer func() { SkipFFprobeInScan = prevSkip }()
+
+	result, err := HandleScanLibrary(context.Background(), db, filepath.Join(tmp, "Artist"), LibraryTypeMusic, musicLibID, nil)
+	if err != nil {
+		t.Fatalf("scan music: %v", err)
+	}
+	if result.Added != len(extensions) {
+		t.Fatalf("expected %d imported tracks, got %+v", len(extensions), result)
 	}
 }

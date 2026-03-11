@@ -1,10 +1,17 @@
+import { useState } from 'react'
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
+import { BrowserRouter, Route, Routes } from 'react-router-dom'
 import { AuthProvider, useAuthActions, useAuthState } from './contexts/AuthContext'
+import { PlayerProvider } from './contexts/PlayerContext'
+import { MainLayout } from './components/MainLayout'
 import { Home } from './pages/Home'
 import { Login } from './pages/Login'
 import { Onboarding } from './pages/Onboarding'
+import { Settings } from './pages/Settings'
+import { ShowDetail } from './pages/ShowDetail'
 import './App.css'
 
-function AppRouter() {
+function AppRouter({ queryClient }: { queryClient: QueryClient }) {
   const { hasAdmin, user, loading } = useAuthState()
   const { refreshSetupStatus } = useAuthActions()
 
@@ -30,13 +37,37 @@ function AppRouter() {
     return <Login />
   }
 
-  return <Home />
+  return (
+    <QueryClientProvider client={queryClient}>
+      <BrowserRouter>
+        <PlayerProvider>
+          <Routes>
+            <Route path="/" element={<MainLayout />}>
+              <Route index element={<Home />} />
+              <Route path="library/:libraryId" element={<Home />} />
+              <Route path="library/:libraryId/show/:showKey" element={<ShowDetail />} />
+              <Route path="settings" element={<Settings />} />
+            </Route>
+          </Routes>
+        </PlayerProvider>
+      </BrowserRouter>
+    </QueryClientProvider>
+  )
 }
 
 function App() {
+  const [queryClient] = useState(
+    () =>
+      new QueryClient({
+        defaultOptions: {
+          queries: { staleTime: 60_000 },
+        },
+      })
+  )
+
   return (
     <AuthProvider>
-      <AppRouter />
+      <AppRouter queryClient={queryClient} />
     </AuthProvider>
   )
 }

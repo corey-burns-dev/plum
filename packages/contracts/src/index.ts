@@ -7,7 +7,9 @@ export type LibraryType = 'tv' | 'movie' | 'music' | 'anime'
 /**
  * Media item type stored per item; matches library type for identification.
  */
-export type MediaType = 'tv' | 'movie' | 'music'
+export type MediaType = 'tv' | 'movie' | 'music' | 'anime'
+
+export type MatchStatus = 'identified' | 'local' | 'unmatched'
 
 export interface Subtitle {
   id: number
@@ -28,7 +30,8 @@ export interface MediaItem {
   title: string
   path: string
   duration: number
-  type: MediaType | string
+  type: MediaType
+  match_status?: MatchStatus
   subtitles?: Subtitle[]
   embeddedSubtitles?: EmbeddedSubtitle[]
   tmdb_id?: number
@@ -38,6 +41,17 @@ export interface MediaItem {
   backdrop_path?: string
   release_date?: string
   vote_average?: number
+  artist?: string
+  album?: string
+  album_artist?: string
+  disc_number?: number
+  track_number?: number
+  release_year?: number
+  /** Set for TV/anime episodes; 0 when not applicable. */
+  season?: number
+  episode?: number
+  /** Path to generated frame thumbnail (video episodes); served at /api/media/:id/thumbnail. */
+  thumbnail_path?: string
 }
 
 export interface Library {
