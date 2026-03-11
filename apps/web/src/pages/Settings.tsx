@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import type {
   HardwareEncodeFormat,
+  Library,
   TranscodingSettings as TranscodingSettingsShape,
   TranscodingSettingsWarning,
   VaapiDecodeCodec,
@@ -8,7 +9,17 @@ import type {
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { useAuthState } from "@/contexts/AuthContext";
-import { useTranscodingSettings, useUpdateTranscodingSettings } from "@/queries";
+import {
+  languagePreferenceOptions,
+  normalizeLanguagePreference,
+  resolveLibraryPlaybackPreferences,
+} from "@/lib/playbackPreferences";
+import {
+  useLibraries,
+  useTranscodingSettings,
+  useUpdateLibraryPlaybackPreferences,
+  useUpdateTranscodingSettings,
+} from "@/queries";
 
 const decodeCodecOptions: Array<{
   key: VaapiDecodeCodec;
@@ -56,12 +67,43 @@ function cloneSettings(settings: TranscodingSettingsShape): TranscodingSettingsS
   };
 }
 
+type LibraryPlaybackPreferencesForm = {
+  preferred_audio_language: string;
+  preferred_subtitle_language: string;
+  subtitles_enabled_by_default: boolean;
+};
+
+function cloneLibraryPlaybackPreferences(library: Library): LibraryPlaybackPreferencesForm {
+  const resolved = resolveLibraryPlaybackPreferences(library);
+  return {
+    preferred_audio_language: normalizeLanguagePreference(resolved.preferredAudioLanguage),
+    preferred_subtitle_language: normalizeLanguagePreference(resolved.preferredSubtitleLanguage),
+    subtitles_enabled_by_default: resolved.subtitlesEnabledByDefault,
+  };
+}
+
+function libraryPreferencesEqual(
+  left: LibraryPlaybackPreferencesForm,
+  right: LibraryPlaybackPreferencesForm,
+): boolean {
+  return (
+    left.preferred_audio_language === right.preferred_audio_language &&
+    left.preferred_subtitle_language === right.preferred_subtitle_language &&
+    left.subtitles_enabled_by_default === right.subtitles_enabled_by_default
+  );
+}
+
 export function Settings() {
   const { user } = useAuthState();
   const isAdmin = user?.is_admin ?? false;
+  const librariesQuery = useLibraries();
   const settingsQuery = useTranscodingSettings({ enabled: isAdmin });
+  const updateLibraryPreferences = useUpdateLibraryPlaybackPreferences();
   const updateSettings = useUpdateTranscodingSettings();
   const [form, setForm] = useState<TranscodingSettingsShape | null>(null);
+  const [libraryForms, setLibraryForms] = useState<Record<number, LibraryPlaybackPreferencesForm>>({});
+  const [librarySaveMessages, setLibrarySaveMessages] = useState<Record<number, string | null>>({});
+  const [savingLibraryId, setSavingLibraryId] = useState<number | null>(null);
   const [warnings, setWarnings] = useState<TranscodingSettingsWarning[]>([]);
   const [saveMessage, setSaveMessage] = useState<string | null>(null);
   const [dirty, setDirty] = useState(false);
@@ -72,11 +114,216 @@ export function Settings() {
     setWarnings(settingsQuery.data.warnings);
   }, [dirty, settingsQuery.data]);
 
+  useEffect(() => {
+    if (!librariesQuery.data) return;
+    setLibraryForms((current) => {
+      const next = { ...current };
+      for (const library of librariesQuery.data) {
+        const fallback = cloneLibraryPlaybackPreferences(library);
+        const existing = current[library.id];
+        const currentLibrary = cloneLibraryPlaybackPreferences(library);
+        next[library.id] =
+          existing && !libraryPreferencesEqual(existing, currentLibrary) ? existing : fallback;
+      }
+      return next;
+    });
+  }, [librariesQuery.data]);
+
+  const videoLibraries = (librariesQuery.data ?? []).filter((library) => library.type !== "music");
+  const getLibraryFormFallback = (libraryId: number) => {
+    const library = librariesQuery.data?.find((item) => item.id === libraryId);
+    return library
+      ? cloneLibraryPlaybackPreferences(library)
+      : {
+          preferred_audio_language: "en",
+          preferred_subtitle_language: "en",
+          subtitles_enabled_by_default: true,
+        };
+  };
+
+  const setLibraryField = <K extends keyof LibraryPlaybackPreferencesForm>(
+    libraryId: number,
+    key: K,
+    value: LibraryPlaybackPreferencesForm[K],
+  ) => {
+    setLibraryForms((current) => {
+      const base = current[libraryId] ?? getLibraryFormFallback(libraryId);
+      return {
+        ...current,
+        [libraryId]: { ...base, [key]: value },
+      };
+    });
+    setLibrarySaveMessages((current) => ({ ...current, [libraryId]: null }));
+  };
+
+  const saveLibraryPreferences = async (library: Library) => {
+    const payload = libraryForms[library.id] ?? cloneLibraryPlaybackPreferences(library);
+    setSavingLibraryId(library.id);
+    setLibrarySaveMessages((current) => ({ ...current, [library.id]: null }));
+    try {
+      const updated = await updateLibraryPreferences.mutateAsync({ libraryId: library.id, payload });
+      setLibraryForms((current) => ({
+        ...current,
+        [library.id]: cloneLibraryPlaybackPreferences(updated),
+      }));
+      setLibrarySaveMessages((current) => ({
+        ...current,
+        [library.id]: "Playback defaults saved.",
+      }));
+    } catch (error) {
+      setLibrarySaveMessages((current) => ({
+        ...current,
+        [library.id]:
+          error instanceof Error ? error.message : "Failed to save playback defaults.",
+      }));
+    } finally {
+      setSavingLibraryId(null);
+    }
+  };
+
+  const playbackDefaultsSection = (
+    <section className="rounded-[var(--radius-lg)] border border-[var(--plum-border)] bg-[var(--plum-panel)]/80 p-6 shadow-[0_20px_45px_rgba(0,0,0,0.35)]">
+      <div className="flex flex-col gap-2">
+        <h1 className="text-2xl font-semibold text-[var(--plum-text)]">Playback defaults</h1>
+        <p className="max-w-2xl text-sm text-[var(--plum-muted)]">
+          Choose the default audio and subtitle language for each library. Anime libraries default
+          to Japanese audio with English subtitles; TV and movie libraries default to English for
+          both when available.
+        </p>
+      </div>
+
+      {librariesQuery.isLoading ? (
+        <p className="mt-5 text-sm text-[var(--plum-muted)]">Loading libraries…</p>
+      ) : librariesQuery.isError ? (
+        <p className="mt-5 text-sm text-red-300">
+          {librariesQuery.error.message || "Failed to load libraries."}
+        </p>
+      ) : videoLibraries.length === 0 ? (
+        <p className="mt-5 text-sm text-[var(--plum-muted)]">
+          Add a TV, movie, or anime library to configure playback defaults.
+        </p>
+      ) : (
+        <div className="mt-6 grid gap-4">
+          {videoLibraries.map((library) => {
+            const current = libraryForms[library.id] ?? cloneLibraryPlaybackPreferences(library);
+            const saved = cloneLibraryPlaybackPreferences(library);
+            const isDirty = !libraryPreferencesEqual(current, saved);
+            const message = librarySaveMessages[library.id];
+
+            return (
+              <article
+                key={library.id}
+                className="rounded-[var(--radius-md)] border border-[var(--plum-border)] bg-[var(--plum-panel-alt)]/60 p-5"
+              >
+                <div className="flex flex-col gap-2 md:flex-row md:items-start md:justify-between">
+                  <div>
+                    <h2 className="text-lg font-medium text-[var(--plum-text)]">{library.name}</h2>
+                    <p className="mt-1 text-xs uppercase tracking-[0.16em] text-[var(--plum-muted)]">
+                      {library.type}
+                    </p>
+                  </div>
+                  <Button
+                    onClick={() => void saveLibraryPreferences(library)}
+                    disabled={!isDirty || savingLibraryId === library.id}
+                  >
+                    {savingLibraryId === library.id ? "Saving…" : "Save defaults"}
+                  </Button>
+                </div>
+
+                <div className="mt-5 grid gap-4 md:grid-cols-3">
+                  <div>
+                    <label
+                      className="mb-2 block text-sm font-medium text-[var(--plum-text)]"
+                      htmlFor={`library-audio-${library.id}`}
+                    >
+                      Preferred audio
+                    </label>
+                    <select
+                      id={`library-audio-${library.id}`}
+                      value={current.preferred_audio_language}
+                      onChange={(event) =>
+                        setLibraryField(
+                          library.id,
+                          "preferred_audio_language",
+                          normalizeLanguagePreference(event.target.value),
+                        )
+                      }
+                      className="flex h-9 w-full rounded-[var(--radius-md)] border border-[var(--plum-border)] bg-[var(--plum-panel)] px-3 py-1 text-sm text-[var(--plum-text)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--plum-ring)] focus-visible:ring-offset-2 focus-visible:ring-offset-[var(--plum-bg)]"
+                    >
+                      {languagePreferenceOptions.map((option) => (
+                        <option key={option.value} value={option.value}>
+                          {option.label}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+
+                  <div>
+                    <label
+                      className="mb-2 block text-sm font-medium text-[var(--plum-text)]"
+                      htmlFor={`library-subtitles-${library.id}`}
+                    >
+                      Preferred subtitles
+                    </label>
+                    <select
+                      id={`library-subtitles-${library.id}`}
+                      value={current.preferred_subtitle_language}
+                      onChange={(event) =>
+                        setLibraryField(
+                          library.id,
+                          "preferred_subtitle_language",
+                          normalizeLanguagePreference(event.target.value),
+                        )
+                      }
+                      className="flex h-9 w-full rounded-[var(--radius-md)] border border-[var(--plum-border)] bg-[var(--plum-panel)] px-3 py-1 text-sm text-[var(--plum-text)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--plum-ring)] focus-visible:ring-offset-2 focus-visible:ring-offset-[var(--plum-bg)]"
+                    >
+                      {languagePreferenceOptions.map((option) => (
+                        <option key={option.value} value={option.value}>
+                          {option.label}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+
+                  <div className="flex items-end">
+                    <Toggle
+                      label="Enable subtitles by default"
+                      checked={current.subtitles_enabled_by_default}
+                      onChange={(checked) =>
+                        setLibraryField(library.id, "subtitles_enabled_by_default", checked)
+                      }
+                      description="If the preferred subtitle language exists, Plum will enable it automatically."
+                    />
+                  </div>
+                </div>
+
+                <p
+                  className={`mt-4 text-sm ${
+                    message?.includes("saved")
+                      ? "text-emerald-300"
+                      : message
+                        ? "text-red-300"
+                        : isDirty
+                          ? "text-[var(--plum-muted)]"
+                          : "text-[var(--plum-muted)]"
+                  }`}
+                >
+                  {message ?? (isDirty ? "Unsaved changes." : "Defaults are active for new playback sessions.")}
+                </p>
+              </article>
+            );
+          })}
+        </div>
+      )}
+    </section>
+  );
+
   if (!isAdmin) {
     return (
-      <div className="mx-auto flex max-w-3xl flex-col gap-4">
+      <div className="mx-auto flex max-w-5xl flex-col gap-6">
+        {playbackDefaultsSection}
         <div className="rounded-[var(--radius-lg)] border border-[var(--plum-border)] bg-[var(--plum-panel)]/80 p-6">
-          <h1 className="text-xl font-semibold text-[var(--plum-text)]">Settings</h1>
+          <h2 className="text-xl font-semibold text-[var(--plum-text)]">Transcoding</h2>
           <p className="mt-2 text-sm text-[var(--plum-muted)]">
             Server transcoding settings are only available to admin accounts.
           </p>
@@ -87,9 +334,10 @@ export function Settings() {
 
   if (settingsQuery.isError) {
     return (
-      <div className="mx-auto flex max-w-3xl flex-col gap-4">
+      <div className="mx-auto flex max-w-5xl flex-col gap-6">
+        {playbackDefaultsSection}
         <div className="rounded-[var(--radius-lg)] border border-[var(--plum-border)] bg-[var(--plum-panel)]/80 p-6">
-          <h1 className="text-xl font-semibold text-[var(--plum-text)]">Settings</h1>
+          <h2 className="text-xl font-semibold text-[var(--plum-text)]">Transcoding</h2>
           <p className="mt-2 text-sm text-red-300">
             {settingsQuery.error.message || "Failed to load transcoding settings."}
           </p>
@@ -100,9 +348,10 @@ export function Settings() {
 
   if (settingsQuery.isLoading || form == null) {
     return (
-      <div className="mx-auto flex max-w-3xl flex-col gap-4">
+      <div className="mx-auto flex max-w-5xl flex-col gap-6">
+        {playbackDefaultsSection}
         <div className="rounded-[var(--radius-lg)] border border-[var(--plum-border)] bg-[var(--plum-panel)]/80 p-6">
-          <h1 className="text-xl font-semibold text-[var(--plum-text)]">Settings</h1>
+          <h2 className="text-xl font-semibold text-[var(--plum-text)]">Transcoding</h2>
           <p className="mt-2 text-sm text-[var(--plum-muted)]">Loading transcoding settings…</p>
         </div>
       </div>
@@ -167,6 +416,8 @@ export function Settings() {
 
   return (
     <div className="mx-auto flex max-w-5xl flex-col gap-6">
+      {playbackDefaultsSection}
+
       <section className="rounded-[var(--radius-lg)] border border-[var(--plum-border)] bg-[var(--plum-panel)]/80 p-6 shadow-[0_20px_45px_rgba(0,0,0,0.35)]">
         <div className="flex flex-col gap-2 md:flex-row md:items-end md:justify-between">
           <div>

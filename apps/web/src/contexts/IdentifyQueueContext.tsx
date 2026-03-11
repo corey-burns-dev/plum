@@ -12,6 +12,7 @@ import { useQueryClient } from "@tanstack/react-query";
 import { useLocation } from "react-router-dom";
 import { plumApiClient } from "../api";
 import { queryKeys, useLibraries } from "../queries";
+import { useScanQueue } from "./ScanQueueContext";
 import { runIdentifyLibraryTask } from "@plum/shared";
 
 export type IdentifyLibraryPhase =
@@ -50,6 +51,7 @@ export function IdentifyQueueProvider({ children }: { children: ReactNode }) {
   const location = useLocation();
   const queryClient = useQueryClient();
   const { data: libraries = [] } = useLibraries();
+  const { getLibraryScanStatus } = useScanQueue();
   const queuedLibsRef = useRef<Set<number>>(new Set());
   const activeLibsRef = useRef<Set<number>>(new Set());
   const identifyControllersRef = useRef<Map<number, AbortController>>(new Map());
@@ -237,6 +239,10 @@ export function IdentifyQueueProvider({ children }: { children: ReactNode }) {
     }
 
     for (const libraryId of identifyOrderRef.current) {
+      const scanStatus = getLibraryScanStatus(libraryId);
+      const scanPhase = scanStatus?.phase;
+      if (scanPhase === "queued" || scanPhase === "scanning") continue;
+      if (scanStatus?.identifyRequested) continue;
       const identifyPhase = identifyPhasesRef.current.get(libraryId);
       if (identifyPhase != null) continue;
       if (queuedLibsRef.current.has(libraryId)) continue;
@@ -245,7 +251,7 @@ export function IdentifyQueueProvider({ children }: { children: ReactNode }) {
     }
 
     void pumpIdentifyQueue();
-  }, [libraries, pumpIdentifyQueue, routeLibraryId, setLibraryIdentifyPhase]);
+  }, [getLibraryScanStatus, libraries, pumpIdentifyQueue, routeLibraryId, setLibraryIdentifyPhase]);
 
   const value = useMemo<IdentifyQueueContextValue>(
     () => ({

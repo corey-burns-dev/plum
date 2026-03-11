@@ -13,12 +13,15 @@ import { LibraryPosterGrid } from "../components/LibraryPosterGrid";
 import { MusicLibraryView } from "../components/MusicLibraryView";
 import { useIdentifyQueue, type IdentifyLibraryPhase } from "../contexts/IdentifyQueueContext";
 import { usePlayer } from "../contexts/PlayerContext";
+import { useScanQueue } from "../contexts/ScanQueueContext";
+import { formatEpisodeLabel, formatRemainingTime, shouldShowProgress } from "../lib/progress";
 import type { ShowGroup } from "../lib/showGrouping";
 import { groupMediaByShow } from "../lib/showGrouping";
 import { useLibraryMedia, useLibraries, useRefreshShow } from "../queries";
 
 const isTVOrAnime = (lib: Library) => lib.type === "tv" || lib.type === "anime";
 const IDENTIFY_POLL_INTERVAL_MS = 5_000;
+const SCAN_POLL_INTERVAL_MS = 2_000;
 
 const hasProviderMatch = (tmdbId?: number, tvdbId?: string) =>
   Boolean(tmdbId && tmdbId > 0) || Boolean(tvdbId);
@@ -38,11 +41,27 @@ function shouldDeferIncompleteCard(
   );
 }
 
+function mapBackendIdentifyPhase(phase?: string): IdentifyLibraryPhase | undefined {
+  switch (phase) {
+    case "queued":
+      return "queued";
+    case "identifying":
+      return "identifying";
+    case "completed":
+      return "complete";
+    case "failed":
+      return "identify-failed";
+    default:
+      return undefined;
+  }
+}
+
 export function Home() {
   const { libraryId: libraryIdParam } = useParams();
   const navigate = useNavigate();
   const { playMovie, playMusicCollection, playShowGroup } = usePlayer();
   const { getLibraryPhase, queueLibraryIdentify } = useIdentifyQueue();
+  const { getLibraryScanStatus } = useScanQueue();
   const {
     data: libraries = [],
     isLoading: loadingLibs,
@@ -54,13 +73,25 @@ export function Home() {
     if (id != null && libraries.some((library) => library.id === id)) return id;
     return libraries[0]?.id ?? null;
   }, [libraryIdParam, libraries]);
-  const selectedLibraryIdentifyPhase = getLibraryPhase(selectedLibraryId);
+  const selectedLibraryScanStatus = getLibraryScanStatus(selectedLibraryId);
+  const selectedLibraryIdentifyPhase =
+    getLibraryPhase(selectedLibraryId) ??
+    mapBackendIdentifyPhase(selectedLibraryScanStatus?.identifyPhase);
+  const isSelectedLibraryScanning =
+    selectedLibraryScanStatus?.phase === "queued" ||
+    selectedLibraryScanStatus?.phase === "scanning" ||
+    selectedLibraryScanStatus?.enriching === true ||
+    selectedLibraryScanStatus?.identifyPhase === "queued" ||
+    selectedLibraryScanStatus?.identifyPhase === "identifying";
   const selectedLibraryPollInterval =
-    selectedLibraryId != null &&
-    (selectedLibraryIdentifyPhase === "identifying" ||
-      selectedLibraryIdentifyPhase === "soft-reveal")
-      ? IDENTIFY_POLL_INTERVAL_MS
-      : false;
+    selectedLibraryId == null
+      ? false
+      : isSelectedLibraryScanning
+        ? SCAN_POLL_INTERVAL_MS
+        : selectedLibraryIdentifyPhase === "identifying" ||
+            selectedLibraryIdentifyPhase === "soft-reveal"
+          ? IDENTIFY_POLL_INTERVAL_MS
+          : false;
   const {
     data: selectedItems = [],
     isFetching: selectedFetching,
@@ -116,6 +147,10 @@ export function Home() {
   const showCardState = useMemo(() => {
     const deferredGroups: ShowGroup[] = [];
     const visibleCards = showGroups.flatMap((group) => {
+      const progressEpisode = [...group.episodes]
+        .filter((episode) => shouldShowProgress(episode))
+        .toSorted((a, b) => (b.last_watched_at ?? "").localeCompare(a.last_watched_at ?? ""))[0];
+      const imdbRating = group.episodes.find((episode) => (episode.imdb_rating ?? 0) > 0)?.imdb_rating;
       const hasMatchedEpisode = group.episodes.some(
         (episode) =>
           episode.match_status === "identified" ||
@@ -135,7 +170,14 @@ export function Home() {
           key: group.showKey,
           title: group.showTitle,
           subtitle: `${group.episodes.length} episode${group.episodes.length === 1 ? "" : "s"}${group.unmatchedCount > 0 ? ` • ${group.unmatchedCount} unmatched` : group.localCount > 0 ? ` • ${group.localCount} local` : ""}`,
+          metaLine: progressEpisode
+            ? [formatEpisodeLabel(progressEpisode), formatRemainingTime(progressEpisode.remaining_seconds)]
+                .filter(Boolean)
+                .join(" • ")
+            : undefined,
           posterPath: group.posterPath,
+          imdbRating,
+          progressPercent: progressEpisode?.progress_percent,
           cardState:
             isIncomplete && shouldRevealSearchingCards
               ? "identifying"
@@ -157,7 +199,7 @@ export function Home() {
               ? () => setIdentifyGroup(group)
               : undefined,
           href: `/library/${selectedLibraryId}/show/${encodeURIComponent(group.showKey)}`,
-          onPlay: () => playShowGroup(group.episodes),
+          onPlay: () => playShowGroup(group.episodes, progressEpisode),
           onContextMenu: (event: ReactMouseEvent<HTMLDivElement>) => {
             event.preventDefault();
             setContextMenu({ x: event.clientX, y: event.clientY, group });
@@ -182,7 +224,6 @@ export function Home() {
         item.release_date?.split("-")[0] || item.title.match(/\((\d{4})\)$/)?.[1] || "Unknown year";
       const status =
         item.match_status && item.match_status !== "identified" ? ` • ${item.match_status}` : "";
-      const rating = item.vote_average ? ` • ${item.vote_average.toFixed(1)}` : "";
       const isIncomplete =
         isExplicitlyUnmatched(item.match_status) ||
         (!item.poster_path &&
@@ -196,8 +237,11 @@ export function Home() {
         {
           key: String(item.id),
           title: item.title,
-          subtitle: `${year}${rating}${status}`,
+          subtitle: `${year}${status}`,
+          metaLine: formatRemainingTime(item.remaining_seconds),
           posterPath: item.poster_path,
+          imdbRating: item.imdb_rating,
+          progressPercent: shouldShowProgress(item) ? item.progress_percent : undefined,
           cardState:
             isIncomplete && shouldRevealSearchingCards
               ? "identifying"
@@ -298,8 +342,21 @@ export function Home() {
                     Retry
                   </button>
                 </p>
+              ) : isSelectedLibraryScanning && selectedItems.length === 0 ? (
+                <p className="text-sm text-[var(--plum-muted)]">
+                  Importing library…
+                  {selectedLibraryScanStatus && (
+                    <>
+                      {" "}
+                      {selectedLibraryScanStatus.processed} processed •{" "}
+                      {selectedLibraryScanStatus.added} added
+                    </>
+                  )}
+                </p>
               ) : selectedItems.length === 0 ? (
-                <p className="text-sm text-[var(--plum-muted)]">No media in this library yet.</p>
+                <p className="text-sm text-[var(--plum-muted)]">
+                  {isSelectedLibraryScanning ? "Importing library…" : "No media in this library yet."}
+                </p>
               ) : showIdentifyPlaceholder ? (
                 <p className="text-sm text-[var(--plum-muted)]">Identifying library…</p>
               ) : isTVOrAnime(selectedLib) ? (

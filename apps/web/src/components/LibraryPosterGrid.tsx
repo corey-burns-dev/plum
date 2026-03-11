@@ -9,7 +9,10 @@ export type PosterGridItem = {
   key: string;
   title: string;
   subtitle: string;
+  metaLine?: string;
   posterPath?: string;
+  imdbRating?: number;
+  progressPercent?: number;
   cardState?: PosterCardState;
   statusLabel?: string;
   statusActionLabel?: string;
@@ -75,6 +78,8 @@ function PosterCardBody({ item }: { item: PosterGridItem }) {
   const posterUrl = tmdbPosterUrl(item.posterPath);
   const [posterErrored, setPosterErrored] = useState(false);
   const cardState = item.cardState ?? "default";
+  const progressPercent =
+    item.progressPercent != null ? Math.max(0, Math.min(100, item.progressPercent)) : 0;
   const showIdentifyingShell = cardState === "identifying" && (!posterUrl || posterErrored);
   const showFailedShell = cardState === "identify-failed" && (!posterUrl || posterErrored);
   const showPlaceholderPoster = cardState === "default" && (!posterUrl || posterErrored);
@@ -121,11 +126,34 @@ function PosterCardBody({ item }: { item: PosterGridItem }) {
             )}
           </div>
         )}
+        {progressPercent > 0 && progressPercent < 95 && (
+          <div className="show-card-progress" aria-hidden="true">
+            <div
+              className="show-card-progress__value"
+              style={{ width: `${progressPercent}%` }}
+            />
+          </div>
+        )}
       </div>
       <div className="show-card-info">
         <div className="show-card-title">{item.title}</div>
         <div className="show-card-count">{item.subtitle}</div>
+        {(item.imdbRating || item.metaLine) && (
+          <div className="show-card-meta">
+            {item.imdbRating ? <ImdbBadge rating={item.imdbRating} /> : null}
+            {item.metaLine ? <span className="show-card-meta__copy">{item.metaLine}</span> : null}
+          </div>
+        )}
       </div>
     </div>
+  );
+}
+
+function ImdbBadge({ rating }: { rating: number }) {
+  return (
+    <span className="show-card-imdb">
+      <span className="show-card-imdb__mark">IMDb</span>
+      <span>{rating.toFixed(1)}</span>
+    </span>
   );
 }

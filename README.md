@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="assets/logo.svg" alt="Plum Logo" width="256" height="256">
+</p>
+
 # Plum 🫐
 
 Plum is a lightweight, experimental media server and player suite inspired by platforms like Plex and Jellyfin. It features a high-performance Go backend for media management and transcoding, paired with a modern React frontend for a seamless viewing experience.

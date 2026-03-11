@@ -4,7 +4,9 @@ import { BrowserRouter, Route, Routes } from "react-router-dom";
 import { AuthProvider, useAuthActions, useAuthState } from "./contexts/AuthContext";
 import { IdentifyQueueProvider } from "./contexts/IdentifyQueueContext";
 import { PlayerProvider } from "./contexts/PlayerContext";
+import { ScanQueueProvider } from "./contexts/ScanQueueContext";
 import { MainLayout } from "./components/MainLayout";
+import { Dashboard } from "./pages/Dashboard";
 import { Home } from "./pages/Home";
 import { Login } from "./pages/Login";
 import { Onboarding } from "./pages/Onboarding";
@@ -41,18 +43,20 @@ function AppRouter({ queryClient }: { queryClient: QueryClient }) {
   return (
     <QueryClientProvider client={queryClient}>
       <BrowserRouter>
-        <IdentifyQueueProvider>
-          <PlayerProvider>
-            <Routes>
-              <Route path="/" element={<MainLayout />}>
-                <Route index element={<Home />} />
-                <Route path="library/:libraryId" element={<Home />} />
-                <Route path="library/:libraryId/show/:showKey" element={<ShowDetail />} />
-                <Route path="settings" element={<Settings />} />
-              </Route>
-            </Routes>
-          </PlayerProvider>
-        </IdentifyQueueProvider>
+        <ScanQueueProvider>
+          <IdentifyQueueProvider>
+            <PlayerProvider>
+              <Routes>
+                <Route path="/" element={<MainLayout />}>
+                  <Route index element={<Dashboard />} />
+                  <Route path="library/:libraryId" element={<Home />} />
+                  <Route path="library/:libraryId/show/:showKey" element={<ShowDetail />} />
+                  <Route path="settings" element={<Settings />} />
+                </Route>
+              </Routes>
+            </PlayerProvider>
+          </IdentifyQueueProvider>
+        </ScanQueueProvider>
       </BrowserRouter>
     </QueryClientProvider>
   );

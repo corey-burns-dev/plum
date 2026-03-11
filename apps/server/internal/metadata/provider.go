@@ -18,6 +18,8 @@ type MatchResult struct {
 	BackdropURL string
 	ReleaseDate string
 	VoteAverage float64
+	IMDbID      string
+	IMDbRating  float64
 	Provider    string // e.g. "tmdb", "tvdb"
 	ExternalID  string // provider-specific id (string supports both TMDB int and TVDB string)
 }
@@ -51,4 +53,9 @@ type SeriesDetails struct {
 // SeriesDetailsProvider fetches TV series metadata by TMDB ID.
 type SeriesDetailsProvider interface {
 	GetSeriesDetails(ctx context.Context, tmdbID int) (*SeriesDetails, error)
+}
+
+// IMDbRatingProvider resolves an IMDb rating by IMDb title id.
+type IMDbRatingProvider interface {
+	GetIMDbRatingByID(ctx context.Context, imdbID string) (float64, error)
 }

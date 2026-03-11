@@ -1,14 +1,19 @@
 import type {
   CreateLibraryPayload,
   CredentialsPayload,
+  CreatePlaybackSessionPayload,
+  EmbeddedAudioTrack,
   EmbeddedSubtitle,
   HardwareEncodeFormat,
+  HomeDashboard,
   IdentifyResult,
   Library,
+  LibraryScanStatus,
   LibraryType,
   MatchStatus,
   MediaItem,
   PlumWebSocketEvent,
+  PlaybackSession,
   ScanLibraryResult,
   SeriesDetails,
   SeriesSearchResult,
@@ -18,15 +23,22 @@ import type {
   TranscodingSettings,
   TranscodingSettingsResponse,
   TranscodingSettingsWarning,
+  UpdatePlaybackSessionAudioPayload,
+  UpdateLibraryPlaybackPreferencesPayload,
+  UpdateMediaProgressPayload,
   User,
   VaapiDecodeCodec,
-} from "@plum/contracts"
+} from "@plum/contracts";
 import {
   CreateLibraryPayloadSchema,
   CredentialsPayloadSchema,
+  CreatePlaybackSessionPayloadSchema,
+  HomeDashboardSchema,
   IdentifyResultSchema,
   LibrarySchema,
+  LibraryScanStatusSchema,
   MediaItemSchema,
+  PlaybackSessionSchema,
   PlumWebSocketEventSchema,
   ScanLibraryResultSchema,
   SeriesDetailsSchema,
@@ -35,22 +47,30 @@ import {
   ShowActionResultSchema,
   TranscodingSettingsResponseSchema,
   TranscodingSettingsSchema,
+  UpdatePlaybackSessionAudioPayloadSchema,
+  UpdateLibraryPlaybackPreferencesPayloadSchema,
+  UpdateMediaProgressPayloadSchema,
   UserSchema,
-} from "@plum/contracts"
-import { Data, Effect, Option, Schema, Schedule } from "effect"
-import { buildBackendUrl, ensureBaseUrl } from "./backend"
+} from "@plum/contracts";
+import { Data, Effect, Option, Schema, Schedule } from "effect";
+import { buildBackendUrl, ensureBaseUrl } from "./backend";
 
 export type {
   CreateLibraryPayload,
   CredentialsPayload,
+  CreatePlaybackSessionPayload,
+  EmbeddedAudioTrack,
   EmbeddedSubtitle,
   HardwareEncodeFormat,
+  HomeDashboard,
   IdentifyResult,
   Library,
+  LibraryScanStatus,
   LibraryType,
   MatchStatus,
   MediaItem,
   PlumWebSocketEvent,
+  PlaybackSession,
   ScanLibraryResult,
   SeriesDetails,
   SeriesSearchResult,
@@ -60,50 +80,53 @@ export type {
   TranscodingSettings,
   TranscodingSettingsResponse,
   TranscodingSettingsWarning,
+  UpdatePlaybackSessionAudioPayload,
+  UpdateLibraryPlaybackPreferencesPayload,
+  UpdateMediaProgressPayload,
   User,
   VaapiDecodeCodec,
-}
+};
 
-const defaultFetchOptions = { credentials: "include" } satisfies RequestInit
+const defaultFetchOptions = { credentials: "include" } satisfies RequestInit;
 
 export class ApiNetworkError extends Data.TaggedError("ApiNetworkError")<{
-  readonly method: string
-  readonly url: string
-  readonly message: string
-  readonly cause: unknown
+  readonly method: string;
+  readonly url: string;
+  readonly message: string;
+  readonly cause: unknown;
 }> {}
 
 export class ApiAbortedError extends Data.TaggedError("ApiAbortedError")<{
-  readonly method: string
-  readonly url: string
-  readonly message: string
+  readonly method: string;
+  readonly url: string;
+  readonly message: string;
 }> {}
 
 export class ApiHttpError extends Data.TaggedError("ApiHttpError")<{
-  readonly method: string
-  readonly url: string
-  readonly status: number
-  readonly body: string
-  readonly message: string
+  readonly method: string;
+  readonly url: string;
+  readonly status: number;
+  readonly body: string;
+  readonly message: string;
 }> {}
 
 export class ApiJsonError extends Data.TaggedError("ApiJsonError")<{
-  readonly method: string
-  readonly url: string
-  readonly message: string
-  readonly cause: unknown
+  readonly method: string;
+  readonly url: string;
+  readonly message: string;
+  readonly cause: unknown;
 }> {}
 
 export class ApiDecodeError extends Data.TaggedError("ApiDecodeError")<{
-  readonly method: string
-  readonly url: string
-  readonly message: string
-  readonly cause: unknown
+  readonly method: string;
+  readonly url: string;
+  readonly message: string;
+  readonly cause: unknown;
 }> {}
 
 export class IdentifyTimeoutError extends Data.TaggedError("IdentifyTimeoutError")<{
-  readonly libraryId: number
-  readonly message: string
+  readonly libraryId: number;
+  readonly message: string;
 }> {}
 
 export type PlumApiError =
@@ -111,92 +134,95 @@ export type PlumApiError =
   | ApiDecodeError
   | ApiHttpError
   | ApiJsonError
-  | ApiNetworkError
+  | ApiNetworkError;
 
-export type IdentifyLibraryTaskError = PlumApiError | IdentifyTimeoutError
+export type IdentifyLibraryTaskError = PlumApiError | IdentifyTimeoutError;
 
 export interface AuthSessionSnapshot {
-  hasAdmin: boolean
-  user: User | null
+  hasAdmin: boolean;
+  user: User | null;
 }
 
 export interface CreatePlumApiClientOptions {
-  readonly baseUrl: string
-  readonly fetch?: typeof fetch
-  readonly fetchOptions?: RequestInit
+  readonly baseUrl: string;
+  readonly fetch?: typeof fetch;
+  readonly fetchOptions?: RequestInit;
 }
 
 interface JsonRequestOptions<S extends Schema.Top & { readonly DecodingServices: never }> {
-  readonly path: string
-  readonly schema: S
-  readonly method?: string
-  readonly body?: unknown
-  readonly signal?: AbortSignal
+  readonly path: string;
+  readonly schema: S;
+  readonly method?: string;
+  readonly body?: unknown;
+  readonly signal?: AbortSignal;
   readonly handleResponse?: (
     response: Response,
     url: string,
-  ) => Effect.Effect<S["Type"], PlumApiError> | null
-  readonly errorMessage?: (details: { readonly status: number; readonly body: string }) => string
+  ) => Effect.Effect<S["Type"], PlumApiError> | null;
+  readonly errorMessage?: (details: { readonly status: number; readonly body: string }) => string;
 }
 
 interface VoidRequestOptions {
-  readonly path: string
-  readonly method?: string
-  readonly body?: unknown
-  readonly signal?: AbortSignal
-  readonly handleResponse?: (response: Response, url: string) => Effect.Effect<void, PlumApiError> | null
-  readonly errorMessage?: (details: { readonly status: number; readonly body: string }) => string
+  readonly path: string;
+  readonly method?: string;
+  readonly body?: unknown;
+  readonly signal?: AbortSignal;
+  readonly handleResponse?: (
+    response: Response,
+    url: string,
+  ) => Effect.Effect<void, PlumApiError> | null;
+  readonly errorMessage?: (details: { readonly status: number; readonly body: string }) => string;
 }
 
 type RequestSignal = {
-  readonly signal: AbortSignal
-  readonly cleanup: () => void
-}
+  readonly signal: AbortSignal;
+  readonly cleanup: () => void;
+};
 
 function isAbortError(cause: unknown): boolean {
   return cause instanceof DOMException
     ? cause.name === "AbortError"
-    : cause instanceof Error && cause.name === "AbortError"
+    : cause instanceof Error && cause.name === "AbortError";
 }
 
 function combineAbortSignals(primary: AbortSignal, secondary?: AbortSignal): RequestSignal {
   if (!secondary) {
-    return { signal: primary, cleanup: () => {} }
+    return { signal: primary, cleanup: () => {} };
   }
 
   const abortSignalAny = AbortSignal as typeof AbortSignal & {
-    any?: (signals: Iterable<AbortSignal>) => AbortSignal
-  }
+    any?: (signals: Iterable<AbortSignal>) => AbortSignal;
+  };
 
   if (typeof abortSignalAny.any === "function") {
     return {
       signal: abortSignalAny.any([primary, secondary]),
       cleanup: () => {},
-    }
+    };
   }
 
-  const controller = new AbortController()
-  const abort = () => controller.abort()
+  const controller = new AbortController();
+  const abort = () => controller.abort();
 
   if (primary.aborted || secondary.aborted) {
-    controller.abort()
-    return { signal: controller.signal, cleanup: () => {} }
+    controller.abort();
+    return { signal: controller.signal, cleanup: () => {} };
   }
 
-  primary.addEventListener("abort", abort, { once: true })
-  secondary.addEventListener("abort", abort, { once: true })
+  primary.addEventListener("abort", abort, { once: true });
+  secondary.addEventListener("abort", abort, { once: true });
 
   return {
     signal: controller.signal,
     cleanup: () => {
-      primary.removeEventListener("abort", abort)
-      secondary.removeEventListener("abort", abort)
+      primary.removeEventListener("abort", abort);
+      secondary.removeEventListener("abort", abort);
     },
-  }
+  };
 }
 
 export function effectErrorToError(error: PlumApiError | IdentifyTimeoutError): Error {
-  return new Error(error.message)
+  return new Error(error.message);
 }
 
 function decodeSchemaEffect<S extends Schema.Top & { readonly DecodingServices: never }>(
@@ -216,33 +242,33 @@ function decodeSchemaEffect<S extends Schema.Top & { readonly DecodingServices: 
           cause,
         }),
     ),
-  )
+  );
 }
 
 export function parsePlumWebSocketEvent(raw: string): PlumWebSocketEvent | null {
   try {
-    const parsed = JSON.parse(raw)
-    return Schema.decodeUnknownSync(PlumWebSocketEventSchema)(parsed)
+    const parsed = JSON.parse(raw);
+    return Schema.decodeUnknownSync(PlumWebSocketEventSchema)(parsed);
   } catch {
-    return null
+    return null;
   }
 }
 
 export function buildPlumWebSocketUrl(baseUrl: string, origin: string): string {
-  const normalizedBase = ensureBaseUrl(baseUrl)
+  const normalizedBase = ensureBaseUrl(baseUrl);
   const resolvedBase = normalizedBase
     ? normalizedBase.startsWith("http")
       ? new URL(normalizedBase)
       : new URL(normalizedBase, origin)
-    : new URL(origin)
-  const protocol = resolvedBase.protocol === "https:" ? "wss:" : "ws:"
-  return `${protocol}//${resolvedBase.host}${resolvedBase.pathname.replace(/\/$/, "")}/ws`
+    : new URL(origin);
+  const protocol = resolvedBase.protocol === "https:" ? "wss:" : "ws:";
+  return `${protocol}//${resolvedBase.host}${resolvedBase.pathname.replace(/\/$/, "")}/ws`;
 }
 
 export function createPlumApiClient(options: CreatePlumApiClientOptions) {
-  const baseUrl = ensureBaseUrl(options.baseUrl)
-  const fetchImpl = options.fetch ?? globalThis.fetch.bind(globalThis)
-  const mergedFetchOptions = { ...defaultFetchOptions, ...options.fetchOptions }
+  const baseUrl = ensureBaseUrl(options.baseUrl);
+  const fetchImpl = options.fetch ?? globalThis.fetch.bind(globalThis);
+  const mergedFetchOptions = { ...defaultFetchOptions, ...options.fetchOptions };
 
   const requestEffect = ({
     method = "GET",
@@ -250,22 +276,22 @@ export function createPlumApiClient(options: CreatePlumApiClientOptions) {
     body,
     signal,
   }: {
-    readonly method?: string
-    readonly path: string
-    readonly body?: unknown
-    readonly signal?: AbortSignal
+    readonly method?: string;
+    readonly path: string;
+    readonly body?: unknown;
+    readonly signal?: AbortSignal;
   }): Effect.Effect<Response, ApiAbortedError | ApiNetworkError> => {
-    const url = buildBackendUrl(baseUrl, path)
+    const url = buildBackendUrl(baseUrl, path);
     return Effect.tryPromise({
       try: (effectSignal) => {
-        const { signal: requestSignal, cleanup } = combineAbortSignals(effectSignal, signal)
+        const { signal: requestSignal, cleanup } = combineAbortSignals(effectSignal, signal);
         return fetchImpl(url, {
           ...mergedFetchOptions,
           method,
           headers: body === undefined ? undefined : { "Content-Type": "application/json" },
           body: body === undefined ? undefined : JSON.stringify(body),
           signal: requestSignal,
-        }).finally(cleanup)
+        }).finally(cleanup);
       },
       catch: (cause) =>
         isAbortError(cause)
@@ -280,8 +306,8 @@ export function createPlumApiClient(options: CreatePlumApiClientOptions) {
               message: `${method} ${url} failed.`,
               cause,
             }),
-    })
-  }
+    });
+  };
 
   const readTextEffect = (
     response: Response,
@@ -303,7 +329,7 @@ export function createPlumApiClient(options: CreatePlumApiClientOptions) {
               message: `Failed to read response body from ${method} ${url}.`,
               cause,
             }),
-    })
+    });
 
   const readJsonEffect = (
     response: Response,
@@ -325,7 +351,7 @@ export function createPlumApiClient(options: CreatePlumApiClientOptions) {
               message: `Invalid JSON response from ${method} ${url}.`,
               cause,
             }),
-    })
+    });
 
   const failHttpEffect = (
     response: Response,
@@ -348,13 +374,13 @@ export function createPlumApiClient(options: CreatePlumApiClientOptions) {
           }),
         ),
       ),
-    )
+    );
 
   const jsonRequestEffect = <S extends Schema.Top & { readonly DecodingServices: never }>(
     request: JsonRequestOptions<S>,
   ): Effect.Effect<S["Type"], PlumApiError> => {
-    const method = request.method ?? "GET"
-    const url = buildBackendUrl(baseUrl, request.path)
+    const method = request.method ?? "GET";
+    const url = buildBackendUrl(baseUrl, request.path);
     return requestEffect({
       method,
       path: request.path,
@@ -363,12 +389,12 @@ export function createPlumApiClient(options: CreatePlumApiClientOptions) {
     }).pipe(
       Effect.flatMap((response) => {
         const handled: Effect.Effect<S["Type"], PlumApiError> | null | undefined =
-          request.handleResponse?.(response, url)
+          request.handleResponse?.(response, url);
         if (handled) {
-          return handled
+          return handled;
         }
         if (!response.ok) {
-          return failHttpEffect(response, method, url, request.errorMessage)
+          return failHttpEffect(response, method, url, request.errorMessage);
         }
         return readJsonEffect(response, method, url).pipe(
           Effect.flatMap((payload) =>
@@ -380,14 +406,14 @@ export function createPlumApiClient(options: CreatePlumApiClientOptions) {
               `Invalid response payload from ${method} ${url}.`,
             ),
           ),
-        )
+        );
       }),
-    )
-  }
+    );
+  };
 
   const voidRequestEffect = (request: VoidRequestOptions): Effect.Effect<void, PlumApiError> => {
-    const method = request.method ?? "GET"
-    const url = buildBackendUrl(baseUrl, request.path)
+    const method = request.method ?? "GET";
+    const url = buildBackendUrl(baseUrl, request.path);
     return requestEffect({
       method,
       path: request.path,
@@ -395,20 +421,20 @@ export function createPlumApiClient(options: CreatePlumApiClientOptions) {
       signal: request.signal,
     }).pipe(
       Effect.flatMap((response) => {
-        const handled = request.handleResponse?.(response, url)
+        const handled = request.handleResponse?.(response, url);
         if (handled) {
-          return handled
+          return handled;
         }
         if (!response.ok) {
-          return failHttpEffect(response, method, url, request.errorMessage)
+          return failHttpEffect(response, method, url, request.errorMessage);
         }
-        return Effect.void
+        return Effect.void;
       }),
-    )
-  }
+    );
+  };
 
   const run = <A>(effect: Effect.Effect<A, PlumApiError>): Promise<A> =>
-    Effect.runPromise(effect.pipe(Effect.mapError(effectErrorToError)))
+    Effect.runPromise(effect.pipe(Effect.mapError(effectErrorToError)));
 
   const effects = {
     getSetupStatus: () =>
@@ -495,6 +521,41 @@ export function createPlumApiClient(options: CreatePlumApiClientOptions) {
         schema: Schema.Array(LibrarySchema),
         errorMessage: ({ status, body }) => `Libraries: ${status}${body ? ` ${body}` : ""}`,
       }),
+    updateLibraryPlaybackPreferences: (
+      id: number,
+      payload: UpdateLibraryPlaybackPreferencesPayload,
+    ) =>
+      decodeSchemaEffect(
+        UpdateLibraryPlaybackPreferencesPayloadSchema,
+        payload,
+        "PUT",
+        `/api/libraries/${id}/playback-preferences`,
+        "Invalid library playback preferences payload.",
+      ).pipe(
+        Effect.flatMap((validatedPayload) =>
+          jsonRequestEffect({
+            method: "PUT",
+            path: `/api/libraries/${id}/playback-preferences`,
+            schema: LibrarySchema,
+            body: validatedPayload,
+            errorMessage: ({ status, body }) =>
+              body || `Save library playback preferences: ${status}`,
+          }),
+        ),
+      ),
+    getLibraryScanStatus: (id: number) =>
+      jsonRequestEffect({
+        path: `/api/libraries/${id}/scan`,
+        schema: LibraryScanStatusSchema,
+        errorMessage: ({ status, body }) => body || `Scan status: ${status}`,
+      }),
+    startLibraryScan: (id: number, options?: { readonly identify?: boolean }) =>
+      jsonRequestEffect({
+        method: "POST",
+        path: `/api/libraries/${id}/scan/start${options?.identify === false ? "?identify=false" : ""}`,
+        schema: LibraryScanStatusSchema,
+        errorMessage: ({ status, body }) => body || `Start scan: ${status}`,
+      }),
     scanLibraryById: (id: number, options?: { readonly identify?: boolean }) =>
       jsonRequestEffect({
         method: "POST",
@@ -527,16 +588,84 @@ export function createPlumApiClient(options: CreatePlumApiClientOptions) {
         schema: Schema.Array(MediaItemSchema),
         errorMessage: ({ status, body }) => `Library media: ${status}${body ? ` ${body}` : ""}`,
       }),
+    getHomeDashboard: () =>
+      jsonRequestEffect({
+        path: "/api/home",
+        schema: HomeDashboardSchema,
+        errorMessage: ({ status, body }) => `Home: ${status}${body ? ` ${body}` : ""}`,
+      }),
     fetchMediaList: () =>
       jsonRequestEffect({
         path: "/api/media",
         schema: Schema.Array(MediaItemSchema),
         errorMessage: ({ status }) => `Failed to fetch media: ${status}`,
       }),
-    startTranscode: (id: number) =>
+    updateMediaProgress: (id: number, payload: UpdateMediaProgressPayload) =>
+      decodeSchemaEffect(
+        UpdateMediaProgressPayloadSchema,
+        payload,
+        "PUT",
+        `/api/media/${id}/progress`,
+        "Invalid media progress payload.",
+      ).pipe(
+        Effect.flatMap((validatedPayload) =>
+          voidRequestEffect({
+            method: "PUT",
+            path: `/api/media/${id}/progress`,
+            body: validatedPayload,
+            errorMessage: ({ status, body }) => body || `Progress: ${status}`,
+          }),
+        ),
+      ),
+    createPlaybackSession: (id: number, payload?: CreatePlaybackSessionPayload) =>
+      (payload
+        ? decodeSchemaEffect(
+            CreatePlaybackSessionPayloadSchema,
+            payload,
+            "POST",
+            `/api/playback/sessions/${id}`,
+            "Invalid playback session payload.",
+          )
+        : Effect.succeed<CreatePlaybackSessionPayload>({})
+      ).pipe(
+        Effect.flatMap((validatedPayload) =>
+          jsonRequestEffect({
+            method: "POST",
+            path: `/api/playback/sessions/${id}`,
+            schema: PlaybackSessionSchema,
+            body: validatedPayload,
+            errorMessage: ({ status, body }) => body || `Create playback session: ${status}`,
+          }),
+        ),
+      ),
+    updatePlaybackSessionAudio: (sessionId: string, payload: UpdatePlaybackSessionAudioPayload) =>
+      decodeSchemaEffect(
+        UpdatePlaybackSessionAudioPayloadSchema,
+        payload,
+        "PATCH",
+        `/api/playback/sessions/${sessionId}/audio`,
+        "Invalid playback session audio payload.",
+      ).pipe(
+        Effect.flatMap((validatedPayload) =>
+          jsonRequestEffect({
+            method: "PATCH",
+            path: `/api/playback/sessions/${sessionId}/audio`,
+            schema: PlaybackSessionSchema,
+            body: validatedPayload,
+            errorMessage: ({ status, body }) => body || `Update playback session audio: ${status}`,
+          }),
+        ),
+      ),
+    closePlaybackSession: (sessionId: string) =>
+      voidRequestEffect({
+        method: "DELETE",
+        path: `/api/playback/sessions/${sessionId}`,
+        errorMessage: ({ status, body }) => body || `Close playback session: ${status}`,
+      }),
+    startTranscode: (id: number, options?: { readonly audioIndex?: number }) =>
       voidRequestEffect({
         method: "POST",
-        path: `/api/transcode/${id}`,
+        path: `/api/transcode/${id}${options?.audioIndex !== undefined && options.audioIndex >= 0 ? `?audio_index=${options.audioIndex}` : ""}`,
         errorMessage: ({ status }) => `Failed to start transcode: ${status}`,
       }),
     cancelTranscode: () =>
@@ -570,15 +699,15 @@ export function createPlumApiClient(options: CreatePlumApiClientOptions) {
         ),
       ),
     searchSeries: (query: string) => {
-      const trimmed = query.trim()
+      const trimmed = query.trim();
       if (!trimmed) {
-        return Effect.succeed<SeriesSearchResult[]>([])
+        return Effect.succeed<SeriesSearchResult[]>([]);
       }
       return jsonRequestEffect({
         path: `/api/series/search?q=${encodeURIComponent(trimmed)}`,
         schema: Schema.Array(SeriesSearchResultSchema),
         errorMessage: ({ status }) => `Search: ${status}`,
-      })
+      });
     },
     refreshShow: (libraryId: number, showKey: string) =>
       jsonRequestEffect({
@@ -596,7 +725,7 @@ export function createPlumApiClient(options: CreatePlumApiClientOptions) {
         body: { showKey, tmdbId },
         errorMessage: ({ status }) => `Identify: ${status}`,
       }),
-  }
+  };
 
   return {
     baseUrl,
@@ -608,87 +737,106 @@ export function createPlumApiClient(options: CreatePlumApiClientOptions) {
     getMe: () => run(effects.getMe()),
     createLibrary: (payload: CreateLibraryPayload) => run(effects.createLibrary(payload)),
     listLibraries: () => run(effects.listLibraries()),
+    updateLibraryPlaybackPreferences: (
+      id: number,
+      payload: UpdateLibraryPlaybackPreferencesPayload,
+    ) => run(effects.updateLibraryPlaybackPreferences(id, payload)),
+    getLibraryScanStatus: (id: number) => run(effects.getLibraryScanStatus(id)),
+    startLibraryScan: (id: number, options?: { readonly identify?: boolean }) =>
+      run(effects.startLibraryScan(id, options)),
     scanLibraryById: (id: number, options?: { readonly identify?: boolean }) =>
       run(effects.scanLibraryById(id, options)),
     identifyLibrary: (id: number, options?: { readonly signal?: AbortSignal }) =>
       run(effects.identifyLibrary(id, options)),
     fetchSeriesByTmdbId: (tmdbId: number) => run(effects.fetchSeriesByTmdbId(tmdbId)),
     fetchLibraryMedia: (id: number) => run(effects.fetchLibraryMedia(id)),
+    getHomeDashboard: () => run(effects.getHomeDashboard()),
     fetchMediaList: () => run(effects.fetchMediaList()),
-    startTranscode: (id: number) => run(effects.startTranscode(id)),
+    updateMediaProgress: (id: number, payload: UpdateMediaProgressPayload) =>
+      run(effects.updateMediaProgress(id, payload)),
+    createPlaybackSession: (id: number, payload?: CreatePlaybackSessionPayload) =>
+      run(effects.createPlaybackSession(id, payload)),
+    updatePlaybackSessionAudio: (sessionId: string, payload: UpdatePlaybackSessionAudioPayload) =>
+      run(effects.updatePlaybackSessionAudio(sessionId, payload)),
+    closePlaybackSession: (sessionId: string) => run(effects.closePlaybackSession(sessionId)),
+    startTranscode: (id: number, options?: { readonly audioIndex?: number }) =>
+      run(effects.startTranscode(id, options)),
     cancelTranscode: () => run(effects.cancelTranscode()),
     getTranscodingSettings: () => run(effects.getTranscodingSettings()),
     updateTranscodingSettings: (payload: TranscodingSettings) =>
       run(effects.updateTranscodingSettings(payload)),
     searchSeries: (query: string) => run(effects.searchSeries(query)),
-    refreshShow: (libraryId: number, showKey: string) => run(effects.refreshShow(libraryId, showKey)),
+    refreshShow: (libraryId: number, showKey: string) =>
+      run(effects.refreshShow(libraryId, showKey)),
     identifyShow: (libraryId: number, showKey: string, tmdbId: number) =>
       run(effects.identifyShow(libraryId, showKey, tmdbId)),
-  }
+  };
 }
 
-export type PlumApiClient = ReturnType<typeof createPlumApiClient>
+export type PlumApiClient = ReturnType<typeof createPlumApiClient>;
 
 export function loadAuthSessionEffect(
   api: PlumApiClient,
   options?: {
-    readonly retries?: number
-    readonly retryDelayMs?: number
+    readonly retries?: number;
+    readonly retryDelayMs?: number;
   },
 ): Effect.Effect<AuthSessionSnapshot, PlumApiError> {
-  const retries = options?.retries ?? 5
-  const retryDelayMs = options?.retryDelayMs ?? 1_000
+  const retries = options?.retries ?? 5;
+  const retryDelayMs = options?.retryDelayMs ?? 1_000;
 
-  return Effect.gen(function*() {
-    const status = yield* api.effects.getSetupStatus()
-    const user = status.hasAdmin ? yield* api.effects.getMe() : null
+  return Effect.gen(function* () {
+    const status = yield* api.effects.getSetupStatus();
+    const user = status.hasAdmin ? yield* api.effects.getMe() : null;
     return {
       hasAdmin: status.hasAdmin,
       user,
-    }
+    };
   }).pipe(
     Effect.retry({
       schedule: Schedule.addDelay(Schedule.recurs(retries), () => Effect.succeed(retryDelayMs)),
     }),
-  )
+  );
 }
 
 export function identifyLibraryTaskEffect(
   api: PlumApiClient,
   options: {
-    readonly libraryId: number
-    readonly signal?: AbortSignal
-    readonly timeoutMs: number
+    readonly libraryId: number;
+    readonly signal?: AbortSignal;
+    readonly timeoutMs: number;
   },
 ): Effect.Effect<IdentifyResult, IdentifyLibraryTaskError> {
-  return api.effects.identifyLibrary(options.libraryId, {
-    signal: options.signal,
-  }).pipe(
-    Effect.timeoutOption(options.timeoutMs),
-    Effect.flatMap(
-      Option.match({
-        onNone: () =>
-          Effect.fail(
-            new IdentifyTimeoutError({
-              libraryId: options.libraryId,
-              message: "identify-timeout",
-            }),
-          ),
-        onSome: Effect.succeed,
-      }),
-    ),
-  )
+  return api.effects
+    .identifyLibrary(options.libraryId, {
+      signal: options.signal,
+    })
+    .pipe(
+      Effect.timeoutOption(options.timeoutMs),
+      Effect.flatMap(
+        Option.match({
+          onNone: () =>
+            Effect.fail(
+              new IdentifyTimeoutError({
+                libraryId: options.libraryId,
+                message: "identify-timeout",
+              }),
+            ),
+          onSome: Effect.succeed,
+        }),
+      ),
+    );
 }
 
 export function runIdentifyLibraryTask(
   api: PlumApiClient,
   options: {
-    readonly libraryId: number
-    readonly signal?: AbortSignal
-    readonly timeoutMs: number
+    readonly libraryId: number;
+    readonly signal?: AbortSignal;
+    readonly timeoutMs: number;
   },
 ): Promise<IdentifyResult> {
   return Effect.runPromise(
     identifyLibraryTaskEffect(api, options).pipe(Effect.mapError(effectErrorToError)),
-  )
+  );
 }

@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
+	"strconv"
 	"strings"
 
 	"plum/internal/db"
@@ -70,18 +72,29 @@ func GetSettingsWarnings(settings db.TranscodingSettings) []db.TranscodingSettin
 	return warnings
 }
 
-func buildTranscodePlans(itemPath, outPath string, settings db.TranscodingSettings, stream videoStreamInfo) []transcodePlan {
+func buildTranscodePlans(itemPath, outPath string, settings db.TranscodingSettings, stream videoStreamInfo, audioIndex int) []transcodePlan {
 	settings = db.NormalizeTranscodingSettings(settings)
 
 	plans := make([]transcodePlan, 0, 2)
-	if hardwarePlan, ok := buildHardwarePlan(itemPath, outPath, settings, stream); ok {
+	if hardwarePlan, ok := buildHardwarePlan(itemPath, outPath, settings, stream, audioIndex); ok {
 		plans = append(plans, hardwarePlan)
 	}
-	plans = append(plans, buildSoftwarePlan(itemPath, outPath))
+	plans = append(plans, buildSoftwarePlan(itemPath, outPath, settings, audioIndex))
 	return plans
 }
 
-func buildHardwarePlan(itemPath, outPath string, settings db.TranscodingSettings, stream videoStreamInfo) (transcodePlan, bool) {
+func buildHLSPlans(itemPath, outDir string, settings db.TranscodingSettings, stream videoStreamInfo, audioIndex int) []transcodePlan {
+	settings = db.NormalizeTranscodingSettings(settings)
+
+	plans := make([]transcodePlan, 0, 2)
+	if hardwarePlan, ok := buildHardwareHLSPlan(itemPath, outDir, settings, stream, audioIndex); ok {
+		plans = append(plans, hardwarePlan)
+	}
+	plans = append(plans, buildSoftwareHLSPlan(itemPath, outDir, settings, audioIndex))
+	return plans
+}
+
+func buildHardwarePlan(itemPath, outPath string, settings db.TranscodingSettings, stream videoStreamInfo, audioIndex int) (transcodePlan, bool) {
 	if !settings.VAAPIEnabled || !settings.HardwareEncodingEnabled || !settings.EncodeFormats.AnyEnabled() {
 		return transcodePlan{}, false
 	}
@@ -110,8 +123,37 @@ func buildHardwarePlan(itemPath, outPath string, settings db.TranscodingSettings
 		)
 	}
 
+	// Always map the first video stream.
+	args = append(args, "-map", "0:v:0")
+
+	// Map audio stream: specific index if provided, otherwise the first audio stream.
+	if audioIndex >= 0 {
+		args = append(args, "-map", fmt.Sprintf("0:%d", audioIndex))
+	} else {
+		args = append(args, "-map", "0:a:0?")
+	}
+
 	args = append(args,
 		"-c:v", encoder,
+		"-c:a", "aac",
+		"-b:a", settings.AudioBitrate,
+	)
+
+	// Stereo downmix (0 = passthrough).
+	if settings.AudioChannels > 0 {
+		args = append(args, "-ac", strconv.Itoa(settings.AudioChannels))
+	}
+
+	// Keyframe interval for fast seeking.
+	g := strconv.Itoa(settings.KeyframeInterval)
+	args = append(args, "-g", g, "-keyint_min", g)
+
+	// Optional max bitrate / buffer size.
+	if settings.MaxBitrate != "" {
+		args = append(args, "-maxrate", settings.MaxBitrate, "-bufsize", settings.MaxBitrate)
+	}
+
+	args = append(args,
 		"-movflags", "+faststart",
 		"-f", "mp4",
 		outPath,
@@ -124,17 +166,175 @@ func buildHardwarePlan(itemPath, outPath string, settings db.TranscodingSettings
 	}, true
 }
 
-func buildSoftwarePlan(itemPath, outPath string) transcodePlan {
+func buildSoftwarePlan(itemPath, outPath string, settings db.TranscodingSettings, audioIndex int) transcodePlan {
+	settings = db.NormalizeTranscodingSettings(settings)
+
+	args := []string{
+		"-y",
+		"-i", itemPath,
+		"-map", "0:v:0",
+	}
+
+	if audioIndex >= 0 {
+		args = append(args, "-map", fmt.Sprintf("0:%d", audioIndex))
+	} else {
+		args = append(args, "-map", "0:a:0?")
+	}
+
+	args = append(args,
+		"-c:v", "libx264",
+		"-crf", strconv.Itoa(settings.CRF),
+		"-preset", "veryfast",
+		"-c:a", "aac",
+		"-b:a", settings.AudioBitrate,
+	)
+
+	// Stereo downmix (0 = passthrough).
+	if settings.AudioChannels > 0 {
+		args = append(args, "-ac", strconv.Itoa(settings.AudioChannels))
+	}
+
+	// Thread control (0 = auto).
+	if settings.Threads > 0 {
+		args = append(args, "-threads", strconv.Itoa(settings.Threads))
+	}
+
+	// Keyframe interval for fast seeking.
+	g := strconv.Itoa(settings.KeyframeInterval)
+	args = append(args, "-g", g, "-keyint_min", g)
+
+	// Optional max bitrate / buffer size.
+	if settings.MaxBitrate != "" {
+		args = append(args, "-maxrate", settings.MaxBitrate, "-bufsize", settings.MaxBitrate)
+	}
+
+	args = append(args,
+		"-movflags", "+faststart",
+		"-f", "mp4",
+		outPath,
+	)
+
 	return transcodePlan{
-		Args: []string{
-			"-y",
+		Args:         args,
+		Mode:         "software",
+		EncodeFormat: "h264",
+	}
+}
+
+func buildHardwareHLSPlan(itemPath, outDir string, settings db.TranscodingSettings, stream videoStreamInfo, audioIndex int) (transcodePlan, bool) {
+	if !settings.VAAPIEnabled || !settings.HardwareEncodingEnabled || !settings.EncodeFormats.AnyEnabled() {
+		return transcodePlan{}, false
+	}
+
+	format := pickHardwareEncodeFormat(settings)
+	if format == "" {
+		return transcodePlan{}, false
+	}
+
+	encoder := hardwareEncoderName(format)
+	uploadFormat := hardwareUploadPixelFormat(format, stream)
+	args := []string{"-y", "-vaapi_device", settings.VAAPIDevicePath}
+
+	if decodeCodec := detectVAAPIDecodeCodec(stream); settings.DecodeCodecs.Enabled(decodeCodec) {
+		args = append(args,
+			"-hwaccel", "vaapi",
+			"-hwaccel_device", settings.VAAPIDevicePath,
+			"-hwaccel_output_format", "vaapi",
 			"-i", itemPath,
-			"-c:v", "libx264",
-			"-preset", "veryfast",
-			"-movflags", "+faststart",
-			"-f", "mp4",
-			outPath,
-		},
+			"-vf", "scale_vaapi=format="+uploadFormat,
+		)
+	} else {
+		args = append(args,
+			"-i", itemPath,
+			"-vf", "format="+uploadFormat+",hwupload",
+		)
+	}
+
+	args = append(args, "-map", "0:v:0")
+	if audioIndex >= 0 {
+		args = append(args, "-map", fmt.Sprintf("0:%d", audioIndex))
+	} else {
+		args = append(args, "-map", "0:a:0?")
+	}
+
+	args = append(args,
+		"-c:v", encoder,
+		"-c:a", "aac",
+		"-b:a", settings.AudioBitrate,
+	)
+	if settings.AudioChannels > 0 {
+		args = append(args, "-ac", strconv.Itoa(settings.AudioChannels))
+	}
+	g := strconv.Itoa(settings.KeyframeInterval)
+	args = append(args, "-g", g, "-keyint_min", g)
+	if settings.MaxBitrate != "" {
+		args = append(args, "-maxrate", settings.MaxBitrate, "-bufsize", settings.MaxBitrate)
+	}
+
+	playlistPath := filepath.Join(outDir, "index.m3u8")
+	segmentPath := filepath.Join(outDir, "segment_%05d.ts")
+	args = append(args,
+		"-f", "hls",
+		"-hls_time", "4",
+		"-hls_list_size", "0",
+		"-hls_playlist_type", "event",
+		"-hls_flags", "append_list+independent_segments+temp_file",
+		"-hls_segment_filename", segmentPath,
+		playlistPath,
+	)
+
+	return transcodePlan{
+		Args:         args,
+		Mode:         "hardware",
+		EncodeFormat: format,
+	}, true
+}
+
+func buildSoftwareHLSPlan(itemPath, outDir string, settings db.TranscodingSettings, audioIndex int) transcodePlan {
+	args := []string{
+		"-y",
+		"-i", itemPath,
+		"-map", "0:v:0",
+	}
+	if audioIndex >= 0 {
+		args = append(args, "-map", fmt.Sprintf("0:%d", audioIndex))
+	} else {
+		args = append(args, "-map", "0:a:0?")
+	}
+
+	args = append(args,
+		"-c:v", "libx264",
+		"-preset", "veryfast",
+		"-crf", strconv.Itoa(settings.CRF),
+		"-c:a", "aac",
+		"-b:a", settings.AudioBitrate,
+	)
+	if settings.AudioChannels > 0 {
+		args = append(args, "-ac", strconv.Itoa(settings.AudioChannels))
+	}
+	if settings.Threads > 0 {
+		args = append(args, "-threads", strconv.Itoa(settings.Threads))
+	}
+	g := strconv.Itoa(settings.KeyframeInterval)
+	args = append(args, "-g", g, "-keyint_min", g)
+	if settings.MaxBitrate != "" {
+		args = append(args, "-maxrate", settings.MaxBitrate, "-bufsize", settings.MaxBitrate)
+	}
+
+	playlistPath := filepath.Join(outDir, "index.m3u8")
+	segmentPath := filepath.Join(outDir, "segment_%05d.ts")
+	args = append(args,
+		"-f", "hls",
+		"-hls_time", "4",
+		"-hls_list_size", "0",
+		"-hls_playlist_type", "event",
+		"-hls_flags", "append_list+independent_segments+temp_file",
+		"-hls_segment_filename", segmentPath,
+		playlistPath,
+	)
+
+	return transcodePlan{
+		Args:         args,
 		Mode:         "software",
 		EncodeFormat: "h264",
 	}

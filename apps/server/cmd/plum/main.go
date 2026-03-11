@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"log"
 	"net/http"
 	"os"
@@ -27,7 +28,7 @@ func main() {
 	conn := getEnv("PLUM_DATABASE_URL", "./data/plum.db")
 	tmdbKey := getEnv("TMDB_API_KEY", "")
 	tvdbKey := getEnv("TVDB_API_KEY", "")
-	pipeline := metadata.NewPipeline(tmdbKey, tvdbKey)
+	omdbKey := getEnv("OMDB_API_KEY", "")
 
 	sqlDB, err := db.InitDB(conn)
 	if err != nil {
@@ -35,12 +36,20 @@ func main() {
 	}
 	defer sqlDB.Close()
 
+	pipeline := metadata.NewPipeline(tmdbKey, tvdbKey, omdbKey)
+	pipeline.SetIMDbRatingProvider(&db.IMDbRatingStore{DB: sqlDB})
+
 	if err := db.SeedSample(sqlDB); err != nil {
 		log.Fatalf("seed sample: %v", err)
 	}
 
 	hub := ws.NewHub()
 	go hub.Run()
+	playbackSessions := transcoder.NewPlaybackSessionManager(filepath.Join(os.TempDir(), "plum_playback"), hub)
+
+	appCtx, appCancel := context.WithCancel(context.Background())
+	defer appCancel()
+	db.StartIMDbRatingsSync(appCtx, sqlDB, log.Printf)
 
 	thumbDir := getEnv("PLUM_THUMBNAILS_DIR", "")
 	if thumbDir == "" {
@@ -49,7 +58,7 @@ func main() {
 
 	srv := &http.Server{
 		Addr:         addr,
-		Handler:      buildRouter(sqlDB, hub, pipeline, thumbDir),
+		Handler:      buildRouter(sqlDB, hub, playbackSessions, pipeline, thumbDir),
 		ReadTimeout:  15 * time.Second,
 		WriteTimeout: 15 * time.Second,
 	}
@@ -65,6 +74,7 @@ func main() {
 	stop := make(chan os.Signal, 1)
 	signal.Notify(stop, syscall.SIGINT, syscall.SIGTERM)
 	<-stop
+	appCancel()
 
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
@@ -82,7 +92,7 @@ func getEnv(key, def string) string {
 	return def
 }
 
-func buildRouter(sqlDB *sql.DB, hub *ws.Hub, pipeline *metadata.Pipeline, thumbDir string) http.Handler {
+func buildRouter(sqlDB *sql.DB, hub *ws.Hub, playbackSessions *transcoder.PlaybackSessionManager, pipeline *metadata.Pipeline, thumbDir string) http.Handler {
 	r := chi.NewRouter()
 
 	// CORS: allow credentials (cookies) by reflecting Origin when set
@@ -107,7 +117,18 @@ func buildRouter(sqlDB *sql.DB, hub *ws.Hub, pipeline *metadata.Pipeline, thumbD
 	r.Use(httpapi.AuthMiddleware(sqlDB))
 
 	authHandler := &httpapi.AuthHandler{DB: sqlDB}
-	libHandler := &httpapi.LibraryHandler{DB: sqlDB, Meta: pipeline, Series: pipeline, Pipeline: pipeline}
+	scanJobs := httpapi.NewLibraryScanManager(sqlDB, pipeline, hub)
+	libHandler := &httpapi.LibraryHandler{
+		DB:       sqlDB,
+		Meta:     pipeline,
+		Series:   pipeline,
+		Pipeline: pipeline,
+		ScanJobs: scanJobs,
+	}
+	scanJobs.AttachHandler(libHandler)
+	if err := scanJobs.Recover(); err != nil {
+		log.Printf("recover scan jobs: %v", err)
+	}
 	transcodingSettingsHandler := &httpapi.TranscodingSettingsHandler{DB: sqlDB}
 
 	r.Get("/health", func(w http.ResponseWriter, r *http.Request) {
@@ -132,7 +153,11 @@ func buildRouter(sqlDB *sql.DB, hub *ws.Hub, pipeline *metadata.Pipeline, thumbD
 
 		protected.Post("/api/libraries", libHandler.CreateLibrary)
 		protected.Get("/api/libraries", libHandler.ListLibraries)
+		protected.Put("/api/libraries/{id}/playback-preferences", libHandler.UpdateLibraryPlaybackPreferences)
+		protected.Get("/api/home", libHandler.GetHomeDashboard)
+		protected.Get("/api/libraries/{id}/scan", libHandler.GetLibraryScanStatus)
 		protected.Post("/api/libraries/{id}/scan", libHandler.ScanLibrary)
+		protected.Post("/api/libraries/{id}/scan/start", libHandler.StartLibraryScan)
 		protected.Post("/api/libraries/{id}/identify", libHandler.IdentifyLibrary)
 		protected.Get("/api/libraries/{id}/media", libHandler.ListLibraryMedia)
 		protected.Post("/api/libraries/{id}/shows/refresh", libHandler.RefreshShow)
@@ -143,6 +168,91 @@ func buildRouter(sqlDB *sql.DB, hub *ws.Hub, pipeline *metadata.Pipeline, thumbD
 
 		protected.Get("/api/media", func(w http.ResponseWriter, r *http.Request) {
 			db.HandleListMedia(w, r, sqlDB)
+		})
+		protected.Put("/api/media/{id}/progress", libHandler.UpdateMediaProgress)
+		protected.Post("/api/playback/sessions/{id}", func(w http.ResponseWriter, r *http.Request) {
+			idStr := chi.URLParam(r, "id")
+			id, err := strconv.Atoi(idStr)
+			if err != nil {
+				http.Error(w, "invalid id", http.StatusBadRequest)
+				return
+			}
+			media, err := db.GetMediaByID(sqlDB, id)
+			if err != nil {
+				http.Error(w, "internal error", http.StatusInternalServerError)
+				return
+			}
+			if media == nil {
+				http.Error(w, "not found", http.StatusNotFound)
+				return
+			}
+			settings, err := db.GetTranscodingSettings(sqlDB)
+			if err != nil {
+				http.Error(w, "internal error", http.StatusInternalServerError)
+				return
+			}
+			var payload struct {
+				AudioIndex int `json:"audioIndex"`
+			}
+			payload.AudioIndex = -1
+			if r.ContentLength != 0 {
+				if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+					http.Error(w, "invalid json", http.StatusBadRequest)
+					return
+				}
+			}
+			state, err := playbackSessions.Create(*media, settings, payload.AudioIndex)
+			if err != nil {
+				http.Error(w, "internal error", http.StatusInternalServerError)
+				return
+			}
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(state)
+		})
+		protected.Patch("/api/playback/sessions/{sessionId}/audio", func(w http.ResponseWriter, r *http.Request) {
+			sessionID := chi.URLParam(r, "sessionId")
+			var payload struct {
+				AudioIndex int `json:"audioIndex"`
+			}
+			if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+				http.Error(w, "invalid json", http.StatusBadRequest)
+				return
+			}
+			settings, err := db.GetTranscodingSettings(sqlDB)
+			if err != nil {
+				http.Error(w, "internal error", http.StatusInternalServerError)
+				return
+			}
+			state, err := playbackSessions.UpdateAudio(sessionID, settings, payload.AudioIndex)
+			if err != nil {
+				status := http.StatusInternalServerError
+				if err == db.ErrNotFound {
+					status = http.StatusNotFound
+				}
+				http.Error(w, err.Error(), status)
+				return
+			}
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(state)
+		})
+		protected.Delete("/api/playback/sessions/{sessionId}", func(w http.ResponseWriter, r *http.Request) {
+			playbackSessions.Close(chi.URLParam(r, "sessionId"))
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(map[string]string{"status": "closed"})
+		})
+		protected.Get("/api/playback/sessions/{sessionId}/revisions/{revision}/*", func(w http.ResponseWriter, r *http.Request) {
+			revision, err := strconv.Atoi(chi.URLParam(r, "revision"))
+			if err != nil {
+				http.Error(w, "invalid revision", http.StatusBadRequest)
+				return
+			}
+			if err := playbackSessions.ServeFile(w, r, chi.URLParam(r, "sessionId"), revision, chi.URLParam(r, "*")); err != nil {
+				status := http.StatusInternalServerError
+				if err == db.ErrNotFound {
+					status = http.StatusNotFound
+				}
+				http.Error(w, err.Error(), status)
+			}
 		})
 		protected.Post("/api/transcode/{id}", func(w http.ResponseWriter, r *http.Request) {
 			idStr := chi.URLParam(r, "id")

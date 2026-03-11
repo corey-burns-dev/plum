@@ -1,0 +1,234 @@
+package db
+
+import (
+	"database/sql"
+	"fmt"
+	"sort"
+	"strings"
+	"time"
+)
+
+const (
+	completedProgressPercent = 95.0
+	completedRemainingSecs   = 120.0
+)
+
+type ContinueWatchingEntry struct {
+	Kind             string    `json:"kind"`
+	Media            MediaItem `json:"media"`
+	ShowKey          string    `json:"show_key,omitempty"`
+	ShowTitle        string    `json:"show_title,omitempty"`
+	EpisodeLabel     string    `json:"episode_label,omitempty"`
+	RemainingSeconds float64   `json:"remaining_seconds"`
+}
+
+type HomeDashboard struct {
+	ContinueWatching []ContinueWatchingEntry `json:"continueWatching"`
+}
+
+type playbackProgressRow struct {
+	PositionSeconds float64
+	DurationSeconds float64
+	ProgressPercent float64
+	Completed       bool
+	LastWatchedAt   string
+}
+
+func GetMediaByLibraryIDForUser(db *sql.DB, libraryID int, userID int) ([]MediaItem, error) {
+	items, err := GetMediaByLibraryID(db, libraryID)
+	if err != nil {
+		return nil, err
+	}
+	return attachPlaybackProgressBatch(db, userID, items)
+}
+
+func GetHomeDashboardForUser(db *sql.DB, userID int) (HomeDashboard, error) {
+	items, err := queryAllMediaByKind(db, "")
+	if err != nil {
+		return HomeDashboard{}, err
+	}
+	items, err = attachPlaybackProgressBatch(db, userID, items)
+	if err != nil {
+		return HomeDashboard{}, err
+	}
+
+	movies := make([]ContinueWatchingEntry, 0)
+	shows := make(map[string]ContinueWatchingEntry)
+	for _, item := range items {
+		if item.Type == LibraryTypeMusic || item.Completed || item.ProgressPercent <= 0 {
+			continue
+		}
+		entry := ContinueWatchingEntry{
+			Media:            item,
+			RemainingSeconds: item.RemainingSeconds,
+		}
+		if item.Type == LibraryTypeMovie {
+			entry.Kind = "movie"
+			movies = append(movies, entry)
+			continue
+		}
+		if item.Type != LibraryTypeTV && item.Type != LibraryTypeAnime {
+			continue
+		}
+		key := showKeyFromItem(item.TMDBID, item.Title)
+		entry.Kind = "show"
+		entry.ShowKey = key
+		entry.ShowTitle = showTitleFromEpisodeTitle(item.Title)
+		entry.EpisodeLabel = episodeLabel(item)
+		if existing, ok := shows[key]; !ok || existing.Media.LastWatchedAt < item.LastWatchedAt {
+			shows[key] = entry
+		}
+	}
+
+	entries := make([]ContinueWatchingEntry, 0, len(movies)+len(shows))
+	entries = append(entries, movies...)
+	for _, entry := range shows {
+		entries = append(entries, entry)
+	}
+	sort.Slice(entries, func(i, j int) bool {
+		return entries[i].Media.LastWatchedAt > entries[j].Media.LastWatchedAt
+	})
+
+	return HomeDashboard{ContinueWatching: entries}, nil
+}
+
+func UpsertPlaybackProgress(db *sql.DB, userID, mediaID int, positionSeconds, durationSeconds float64, completed bool) error {
+	if userID <= 0 || mediaID <= 0 {
+		return fmt.Errorf("user and media ids are required")
+	}
+	if positionSeconds < 0 {
+		positionSeconds = 0
+	}
+	if durationSeconds < 0 {
+		durationSeconds = 0
+	}
+	progressPercent := 0.0
+	if durationSeconds > 0 {
+		progressPercent = (positionSeconds / durationSeconds) * 100
+		if progressPercent < 0 {
+			progressPercent = 0
+		}
+		if progressPercent > 100 {
+			progressPercent = 100
+		}
+	}
+	remainingSeconds := durationSeconds - positionSeconds
+	if remainingSeconds < 0 {
+		remainingSeconds = 0
+	}
+	if !completed && (progressPercent >= completedProgressPercent || (durationSeconds > 0 && remainingSeconds <= completedRemainingSecs)) {
+		completed = true
+	}
+	if completed {
+		positionSeconds = 0
+		progressPercent = 100
+	}
+
+	now := time.Now().UTC().Format(time.RFC3339)
+	_, err := db.Exec(`
+INSERT INTO playback_progress (
+  user_id, media_id, position_seconds, duration_seconds, progress_percent, completed, last_watched_at, created_at, updated_at
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+ON CONFLICT(user_id, media_id) DO UPDATE SET
+  position_seconds = excluded.position_seconds,
+  duration_seconds = excluded.duration_seconds,
+  progress_percent = excluded.progress_percent,
+  completed = excluded.completed,
+  last_watched_at = excluded.last_watched_at,
+  updated_at = excluded.updated_at
+`,
+		userID,
+		mediaID,
+		positionSeconds,
+		durationSeconds,
+		progressPercent,
+		completed,
+		now,
+		now,
+		now,
+	)
+	return err
+}
+
+func attachPlaybackProgressBatch(db *sql.DB, userID int, items []MediaItem) ([]MediaItem, error) {
+	if userID <= 0 || len(items) == 0 {
+		return items, nil
+	}
+	ids := make([]int, len(items))
+	for i := range items {
+		ids[i] = items[i].ID
+	}
+	progressByID, err := getPlaybackProgressByMediaIDs(db, userID, ids)
+	if err != nil {
+		return nil, err
+	}
+	for i := range items {
+		progress, ok := progressByID[items[i].ID]
+		if !ok {
+			continue
+		}
+		items[i].ProgressSeconds = progress.PositionSeconds
+		items[i].ProgressPercent = progress.ProgressPercent
+		items[i].Completed = progress.Completed
+		items[i].LastWatchedAt = progress.LastWatchedAt
+		if duration := progress.DurationSeconds; duration > 0 {
+			remaining := duration - progress.PositionSeconds
+			if remaining < 0 {
+				remaining = 0
+			}
+			items[i].RemainingSeconds = remaining
+		}
+	}
+	return items, nil
+}
+
+func getPlaybackProgressByMediaIDs(db *sql.DB, userID int, mediaIDs []int) (map[int]playbackProgressRow, error) {
+	if len(mediaIDs) == 0 {
+		return nil, nil
+	}
+	placeholders := make([]string, len(mediaIDs))
+	args := make([]any, 0, len(mediaIDs)+1)
+	args = append(args, userID)
+	for i, mediaID := range mediaIDs {
+		placeholders[i] = "?"
+		args = append(args, mediaID)
+	}
+	rows, err := db.Query(
+		`SELECT media_id, position_seconds, duration_seconds, progress_percent, completed, COALESCE(last_watched_at, '') FROM playback_progress WHERE user_id = ? AND media_id IN (`+strings.Join(placeholders, ",")+`)`,
+		args...,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	out := make(map[int]playbackProgressRow, len(mediaIDs))
+	for rows.Next() {
+		var mediaID int
+		var progress playbackProgressRow
+		if err := rows.Scan(&mediaID, &progress.PositionSeconds, &progress.DurationSeconds, &progress.ProgressPercent, &progress.Completed, &progress.LastWatchedAt); err != nil {
+			return nil, err
+		}
+		out[mediaID] = progress
+	}
+	return out, rows.Err()
+}
+
+func showTitleFromEpisodeTitle(title string) string {
+	if i := strings.Index(strings.ToLower(title), " - s"); i > 0 {
+		return strings.TrimSpace(title[:i])
+	}
+	if i := strings.Index(title, " - "); i > 0 {
+		return strings.TrimSpace(title[:i])
+	}
+	return strings.TrimSpace(title)
+}
+
+func episodeLabel(item MediaItem) string {
+	season := item.Season
+	episode := item.Episode
+	if season <= 0 && episode <= 0 {
+		return ""
+	}
+	return fmt.Sprintf("S%02dE%02d", season, episode)
+}

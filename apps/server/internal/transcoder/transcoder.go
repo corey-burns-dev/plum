@@ -1,6 +1,7 @@
 package transcoder
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -8,6 +9,7 @@ import (
 	"net/http"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -69,7 +71,14 @@ func HandleStartTranscode(w http.ResponseWriter, r *http.Request, sqlDB *sql.DB,
 	log.Printf("transcoding settings: VAAPIEnabled=%v HardwareEncodingEnabled=%v Device=%s PreferredFormat=%s",
 		settings.VAAPIEnabled, settings.HardwareEncodingEnabled, settings.VAAPIDevicePath, settings.PreferredHardwareEncodeFormat)
 
-	go startTranscodeJob(*media, settings, hub)
+	audioIndex := -1
+	if audioIndexStr := r.URL.Query().Get("audio_index"); audioIndexStr != "" {
+		if idx, err := strconv.Atoi(audioIndexStr); err == nil {
+			audioIndex = idx
+		}
+	}
+
+	go startTranscodeJob(*media, settings, hub, audioIndex)
 
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(map[string]string{
@@ -77,12 +86,12 @@ func HandleStartTranscode(w http.ResponseWriter, r *http.Request, sqlDB *sql.DB,
 	})
 }
 
-func startTranscodeJob(item db.MediaItem, settings db.TranscodingSettings, hub *ws.Hub) {
+func startTranscodeJob(item db.MediaItem, settings db.TranscodingSettings, hub *ws.Hub, audioIndex int) {
 	outPath := filepath.Join("/tmp", fmt.Sprintf("plum_transcoded_%d.mp4", item.ID))
 	stream := probeVideoStream(item.Path)
-	plans := buildTranscodePlans(item.Path, outPath, settings, stream)
+	plans := buildTranscodePlans(item.Path, outPath, settings, stream, audioIndex)
 
-	log.Printf("transcode plans for media %d: %d plan(s), preferred=%s", item.ID, len(plans), plans[0].Mode)
+	log.Printf("transcode plans for media %d: %d plan(s), preferred=%s, audioIndex=%d", item.ID, len(plans), plans[0].Mode, audioIndex)
 	for i, p := range plans {
 		log.Printf("  plan[%d] mode=%s format=%s args: ffmpeg %s", i, p.Mode, p.EncodeFormat, strings.Join(p.Args, " "))
 	}
@@ -125,8 +134,18 @@ func startTranscodeJob(item db.MediaItem, settings db.TranscodingSettings, hub *
 		}
 
 		cmd := exec.CommandContext(ctx, "ffmpeg", plan.Args...)
+		var stderrBuf bytes.Buffer
+		cmd.Stderr = &stderrBuf
 		log.Printf("starting ffmpeg for media %d in %s mode: %s -> %s", item.ID, plan.Mode, item.Path, outPath)
 		if err := cmd.Run(); err != nil {
+			// Log last portion of stderr for diagnostics.
+			if stderrBuf.Len() > 0 {
+				stderr := stderrBuf.String()
+				if len(stderr) > 2048 {
+					stderr = stderr[len(stderr)-2048:]
+				}
+				log.Printf("ffmpeg stderr for media %d:\n%s", item.ID, stderr)
+			}
 			// Distinguish cancellation from real errors.
 			if ctx.Err() != nil {
 				log.Printf("transcode for media %d cancelled during %s mode", item.ID, plan.Mode)

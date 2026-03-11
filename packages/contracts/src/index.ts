@@ -45,6 +45,18 @@ export const EmbeddedSubtitleSchema = Schema.Struct({
   title: Schema.String,
 });
 
+export interface EmbeddedAudioTrack {
+  streamIndex: number;
+  language: string;
+  title: string;
+}
+
+export const EmbeddedAudioTrackSchema = Schema.Struct({
+  streamIndex: Schema.Number,
+  language: Schema.String,
+  title: Schema.String,
+});
+
 export interface MediaItem {
   id: number;
   library_id?: number;
@@ -55,6 +67,7 @@ export interface MediaItem {
   match_status?: MatchStatus;
   subtitles?: Subtitle[];
   embeddedSubtitles?: EmbeddedSubtitle[];
+  embeddedAudioTracks?: EmbeddedAudioTrack[];
   tmdb_id?: number;
   tvdb_id?: string;
   overview?: string;
@@ -62,12 +75,19 @@ export interface MediaItem {
   backdrop_path?: string;
   release_date?: string;
   vote_average?: number;
+  imdb_id?: string;
+  imdb_rating?: number;
   artist?: string;
   album?: string;
   album_artist?: string;
   disc_number?: number;
   track_number?: number;
   release_year?: number;
+  progress_seconds?: number;
+  progress_percent?: number;
+  remaining_seconds?: number;
+  completed?: boolean;
+  last_watched_at?: string;
   /** Set for TV/anime episodes; 0 when not applicable. */
   season?: number;
   episode?: number;
@@ -85,6 +105,7 @@ export const MediaItemSchema = Schema.Struct({
   match_status: Schema.optional(MatchStatusSchema),
   subtitles: Schema.optional(Schema.Array(SubtitleSchema)),
   embeddedSubtitles: Schema.optional(Schema.Array(EmbeddedSubtitleSchema)),
+  embeddedAudioTracks: Schema.optional(Schema.Array(EmbeddedAudioTrackSchema)),
   tmdb_id: Schema.optional(Schema.Number),
   tvdb_id: Schema.optional(Schema.String),
   overview: Schema.optional(Schema.String),
@@ -92,15 +113,105 @@ export const MediaItemSchema = Schema.Struct({
   backdrop_path: Schema.optional(Schema.String),
   release_date: Schema.optional(Schema.String),
   vote_average: Schema.optional(Schema.Number),
+  imdb_id: Schema.optional(Schema.String),
+  imdb_rating: Schema.optional(Schema.Number),
   artist: Schema.optional(Schema.String),
   album: Schema.optional(Schema.String),
   album_artist: Schema.optional(Schema.String),
   disc_number: Schema.optional(Schema.Number),
   track_number: Schema.optional(Schema.Number),
   release_year: Schema.optional(Schema.Number),
+  progress_seconds: Schema.optional(Schema.Number),
+  progress_percent: Schema.optional(Schema.Number),
+  remaining_seconds: Schema.optional(Schema.Number),
+  completed: Schema.optional(Schema.Boolean),
+  last_watched_at: Schema.optional(Schema.String),
   season: Schema.optional(Schema.Number),
   episode: Schema.optional(Schema.Number),
   thumbnail_path: Schema.optional(Schema.String),
+});
+
+export interface UpdateMediaProgressPayload {
+  position_seconds: number;
+  duration_seconds: number;
+  completed?: boolean;
+}
+
+export const UpdateMediaProgressPayloadSchema = Schema.Struct({
+  position_seconds: Schema.Number,
+  duration_seconds: Schema.Number,
+  completed: Schema.optional(Schema.Boolean),
+});
+
+export type PlaybackSessionStatus = "starting" | "ready" | "error" | "closed";
+
+export const PlaybackSessionStatusSchema = Schema.Literals([
+  "starting",
+  "ready",
+  "error",
+  "closed",
+]);
+
+export interface CreatePlaybackSessionPayload {
+  audioIndex?: number;
+}
+
+export const CreatePlaybackSessionPayloadSchema = Schema.Struct({
+  audioIndex: Schema.optional(Schema.Number),
+});
+
+export interface UpdatePlaybackSessionAudioPayload {
+  audioIndex: number;
+}
+
+export const UpdatePlaybackSessionAudioPayloadSchema = Schema.Struct({
+  audioIndex: Schema.Number,
+});
+
+export interface PlaybackSession {
+  sessionId: string;
+  mediaId: number;
+  revision: number;
+  audioIndex: number;
+  status: PlaybackSessionStatus;
+  playlistPath: string;
+  error?: string;
+}
+
+export const PlaybackSessionSchema = Schema.Struct({
+  sessionId: Schema.String,
+  mediaId: Schema.Number,
+  revision: Schema.Number,
+  audioIndex: Schema.Number,
+  status: PlaybackSessionStatusSchema,
+  playlistPath: Schema.String,
+  error: Schema.optional(Schema.String),
+});
+
+export interface ContinueWatchingEntry {
+  kind: "movie" | "show";
+  media: MediaItem;
+  show_key?: string;
+  show_title?: string;
+  episode_label?: string;
+  remaining_seconds: number;
+}
+
+export const ContinueWatchingEntrySchema = Schema.Struct({
+  kind: Schema.Literals(["movie", "show"]),
+  media: MediaItemSchema,
+  show_key: Schema.optional(Schema.String),
+  show_title: Schema.optional(Schema.String),
+  episode_label: Schema.optional(Schema.String),
+  remaining_seconds: Schema.Number,
+});
+
+export interface HomeDashboard {
+  continueWatching: ContinueWatchingEntry[];
+}
+
+export const HomeDashboardSchema = Schema.Struct({
+  continueWatching: Schema.Array(ContinueWatchingEntrySchema),
 });
 
 export interface Library {
@@ -109,6 +220,9 @@ export interface Library {
   type: LibraryType;
   path: string;
   user_id: number;
+  preferred_audio_language?: string;
+  preferred_subtitle_language?: string;
+  subtitles_enabled_by_default?: boolean;
 }
 
 export const LibrarySchema = Schema.Struct({
@@ -117,6 +231,21 @@ export const LibrarySchema = Schema.Struct({
   type: LibraryTypeSchema,
   path: Schema.String,
   user_id: Schema.Number,
+  preferred_audio_language: Schema.optional(Schema.String),
+  preferred_subtitle_language: Schema.optional(Schema.String),
+  subtitles_enabled_by_default: Schema.optional(Schema.Boolean),
+});
+
+export interface UpdateLibraryPlaybackPreferencesPayload {
+  preferred_audio_language: string;
+  preferred_subtitle_language: string;
+  subtitles_enabled_by_default: boolean;
+}
+
+export const UpdateLibraryPlaybackPreferencesPayloadSchema = Schema.Struct({
+  preferred_audio_language: Schema.String,
+  preferred_subtitle_language: Schema.String,
+  subtitles_enabled_by_default: Schema.Boolean,
 });
 
 export interface CreateLibraryPayload {
@@ -175,6 +304,64 @@ export const ScanLibraryResultSchema = Schema.Struct({
   removed: Schema.Number,
   unmatched: Schema.Number,
   skipped: Schema.Number,
+});
+
+export type LibraryScanPhase = "idle" | "queued" | "scanning" | "completed" | "failed";
+
+export const LibraryScanPhaseSchema = Schema.Literals([
+  "idle",
+  "queued",
+  "scanning",
+  "completed",
+  "failed",
+]);
+
+export type LibraryIdentifyPhase = "idle" | "queued" | "identifying" | "completed" | "failed";
+
+export const LibraryIdentifyPhaseSchema = Schema.Literals([
+  "idle",
+  "queued",
+  "identifying",
+  "completed",
+  "failed",
+]);
+
+export interface LibraryScanStatus {
+  libraryId: number;
+  phase: LibraryScanPhase;
+  enriching: boolean;
+  identifyPhase: LibraryIdentifyPhase;
+  identified: number;
+  identifyFailed: number;
+  processed: number;
+  added: number;
+  updated: number;
+  removed: number;
+  unmatched: number;
+  skipped: number;
+  identifyRequested: boolean;
+  error?: string;
+  startedAt?: string;
+  finishedAt?: string;
+}
+
+export const LibraryScanStatusSchema = Schema.Struct({
+  libraryId: Schema.Number,
+  phase: LibraryScanPhaseSchema,
+  enriching: Schema.Boolean,
+  identifyPhase: LibraryIdentifyPhaseSchema,
+  identified: Schema.Number,
+  identifyFailed: Schema.Number,
+  processed: Schema.Number,
+  added: Schema.Number,
+  updated: Schema.Number,
+  removed: Schema.Number,
+  unmatched: Schema.Number,
+  skipped: Schema.Number,
+  identifyRequested: Schema.Boolean,
+  error: Schema.optional(Schema.String),
+  startedAt: Schema.optional(Schema.String),
+  finishedAt: Schema.optional(Schema.String),
 });
 
 export interface IdentifyResult {
@@ -286,6 +473,12 @@ export interface TranscodingSettings {
   encodeFormats: Record<HardwareEncodeFormat, boolean>;
   preferredHardwareEncodeFormat: HardwareEncodeFormat;
   allowSoftwareFallback: boolean;
+  crf: number;
+  audioBitrate: string;
+  audioChannels: number;
+  threads: number;
+  keyframeInterval: number;
+  maxBitrate: string;
 }
 
 export const VaapiDecodeCodecFlagsSchema = Schema.Struct({
@@ -314,6 +507,12 @@ export const TranscodingSettingsSchema = Schema.Struct({
   encodeFormats: HardwareEncodeFormatFlagsSchema,
   preferredHardwareEncodeFormat: HardwareEncodeFormatSchema,
   allowSoftwareFallback: Schema.Boolean,
+  crf: Schema.Number,
+  audioBitrate: Schema.String,
+  audioChannels: Schema.Number,
+  threads: Schema.Number,
+  keyframeInterval: Schema.Number,
+  maxBitrate: Schema.String,
 });
 
 export interface TranscodingSettingsWarning {
@@ -369,12 +568,30 @@ export interface TranscodeCompleteEvent {
   error: string;
 }
 
+export interface PlaybackSessionUpdateEvent {
+  type: "playback_session_update";
+  sessionId: string;
+  mediaId: number;
+  revision: number;
+  audioIndex: number;
+  status: PlaybackSessionStatus;
+  playlistPath: string;
+  error?: string;
+}
+
+export interface LibraryScanUpdateEvent {
+  type: "library_scan_update";
+  scan: LibraryScanStatus;
+}
+
 export type PlumWebSocketEvent =
   | WelcomeEvent
   | PongEvent
   | TranscodeStartedEvent
   | TranscodeWarningEvent
-  | TranscodeCompleteEvent;
+  | TranscodeCompleteEvent
+  | PlaybackSessionUpdateEvent
+  | LibraryScanUpdateEvent;
 
 export const WelcomeEventSchema = Schema.Struct({
   type: Schema.Literal("welcome"),
@@ -409,10 +626,28 @@ export const TranscodeCompleteEventSchema = Schema.Struct({
   error: Schema.String,
 });
 
+export const PlaybackSessionUpdateEventSchema = Schema.Struct({
+  type: Schema.Literal("playback_session_update"),
+  sessionId: Schema.String,
+  mediaId: Schema.Number,
+  revision: Schema.Number,
+  audioIndex: Schema.Number,
+  status: PlaybackSessionStatusSchema,
+  playlistPath: Schema.String,
+  error: Schema.optional(Schema.String),
+});
+
+export const LibraryScanUpdateEventSchema = Schema.Struct({
+  type: Schema.Literal("library_scan_update"),
+  scan: LibraryScanStatusSchema,
+});
+
 export const PlumWebSocketEventSchema = Schema.Union([
   WelcomeEventSchema,
   PongEventSchema,
   TranscodeStartedEventSchema,
   TranscodeWarningEventSchema,
   TranscodeCompleteEventSchema,
+  PlaybackSessionUpdateEventSchema,
+  LibraryScanUpdateEventSchema,
 ]);

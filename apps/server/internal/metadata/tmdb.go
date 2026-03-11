@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/url"
 	"strconv"
+	"sync"
 )
 
 const tmdbBaseURL = "https://api.themoviedb.org/3"
@@ -14,6 +15,12 @@ const tmdbImageBase = "https://image.tmdb.org/t/p"
 
 type TMDBClient struct {
 	APIKey string
+
+	mu           sync.RWMutex
+	tvDetails    map[int]*TMDBResult
+	movieDetails map[int]*TMDBResult
+	tvIMDbIDs    map[int]string
+	movieIMDbIDs map[int]string
 }
 
 func (c *TMDBClient) ProviderName() string {
@@ -32,12 +39,22 @@ type TMDBResult struct {
 	VoteAverage  float64 `json:"vote_average"`
 }
 
+type tmdbExternalIDsResponse struct {
+	IMDbID string `json:"imdb_id"`
+}
+
 type TMDBSearchResponse struct {
 	Results []TMDBResult `json:"results"`
 }
 
 func NewTMDBClient(apiKey string) *TMDBClient {
-	return &TMDBClient{APIKey: apiKey}
+	return &TMDBClient{
+		APIKey:       apiKey,
+		tvDetails:    map[int]*TMDBResult{},
+		movieDetails: map[int]*TMDBResult{},
+		tvIMDbIDs:    map[int]string{},
+		movieIMDbIDs: map[int]string{},
+	}
 }
 
 func (c *TMDBClient) SearchTV(ctx context.Context, query string) ([]MatchResult, error) {
@@ -96,6 +113,7 @@ func (c *TMDBClient) GetMovie(ctx context.Context, movieID string) (*MatchResult
 		return nil, err
 	}
 	m := c.tmdbResultToMatch(*detail, detail.Title, detail.ReleaseDate)
+	m.IMDbID, _ = c.getMovieIMDbID(ctx, id)
 	return &m, nil
 }
 
@@ -133,6 +151,7 @@ func (c *TMDBClient) GetEpisode(ctx context.Context, seriesID string, season, ep
 	if m.BackdropURL == "" && series != nil {
 		m.BackdropURL = tmdbImageURL(series.BackdropPath, "w500")
 	}
+	m.IMDbID, _ = c.getTVIMDbID(ctx, tvID)
 	m.Provider = "tmdb"
 	// Use series ID (tvID) so all episodes of the same show share one tmdb_id for grouping.
 	m.ExternalID = strconv.Itoa(tvID)
@@ -153,6 +172,12 @@ func (c *TMDBClient) tmdbResultToMatch(r TMDBResult, title, releaseDate string) 
 }
 
 func (c *TMDBClient) getTVDetails(id int) (*TMDBResult, error) {
+	c.mu.RLock()
+	if cached, ok := c.tvDetails[id]; ok {
+		c.mu.RUnlock()
+		return cached, nil
+	}
+	c.mu.RUnlock()
 	u := fmt.Sprintf("%s/tv/%d?api_key=%s", tmdbBaseURL, id, c.APIKey)
 	resp, err := http.Get(u)
 	if err != nil {
@@ -163,10 +188,19 @@ func (c *TMDBClient) getTVDetails(id int) (*TMDBResult, error) {
 	if err := json.NewDecoder(resp.Body).Decode(&res); err != nil {
 		return nil, err
 	}
+	c.mu.Lock()
+	c.tvDetails[id] = &res
+	c.mu.Unlock()
 	return &res, nil
 }
 
 func (c *TMDBClient) getMovieDetails(id int) (*TMDBResult, error) {
+	c.mu.RLock()
+	if cached, ok := c.movieDetails[id]; ok {
+		c.mu.RUnlock()
+		return cached, nil
+	}
+	c.mu.RUnlock()
 	u := fmt.Sprintf("%s/movie/%d?api_key=%s", tmdbBaseURL, id, c.APIKey)
 	resp, err := http.Get(u)
 	if err != nil {
@@ -177,6 +211,9 @@ func (c *TMDBClient) getMovieDetails(id int) (*TMDBResult, error) {
 	if err := json.NewDecoder(resp.Body).Decode(&res); err != nil {
 		return nil, err
 	}
+	c.mu.Lock()
+	c.movieDetails[id] = &res
+	c.mu.Unlock()
 	return &res, nil
 }
 
@@ -193,6 +230,57 @@ func (c *TMDBClient) GetSeriesDetails(ctx context.Context, tmdbID int) (*SeriesD
 		BackdropPath: tmdbImageURL(detail.BackdropPath, "w500"),
 		FirstAirDate: detail.FirstAirDate,
 	}, nil
+}
+
+func (c *TMDBClient) getMovieIMDbID(ctx context.Context, id int) (string, error) {
+	c.mu.RLock()
+	if cached, ok := c.movieIMDbIDs[id]; ok {
+		c.mu.RUnlock()
+		return cached, nil
+	}
+	c.mu.RUnlock()
+	imdbID, err := c.getIMDbID(ctx, fmt.Sprintf("%s/movie/%d/external_ids?api_key=%s", tmdbBaseURL, id, c.APIKey))
+	if err != nil {
+		return "", err
+	}
+	c.mu.Lock()
+	c.movieIMDbIDs[id] = imdbID
+	c.mu.Unlock()
+	return imdbID, nil
+}
+
+func (c *TMDBClient) getTVIMDbID(ctx context.Context, id int) (string, error) {
+	c.mu.RLock()
+	if cached, ok := c.tvIMDbIDs[id]; ok {
+		c.mu.RUnlock()
+		return cached, nil
+	}
+	c.mu.RUnlock()
+	imdbID, err := c.getIMDbID(ctx, fmt.Sprintf("%s/tv/%d/external_ids?api_key=%s", tmdbBaseURL, id, c.APIKey))
+	if err != nil {
+		return "", err
+	}
+	c.mu.Lock()
+	c.tvIMDbIDs[id] = imdbID
+	c.mu.Unlock()
+	return imdbID, nil
+}
+
+func (c *TMDBClient) getIMDbID(ctx context.Context, endpoint string) (string, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
+	if err != nil {
+		return "", err
+	}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return "", err
+	}
+	defer resp.Body.Close()
+	var payload tmdbExternalIDsResponse
+	if err := json.NewDecoder(resp.Body).Decode(&payload); err != nil {
+		return "", err
+	}
+	return payload.IMDbID, nil
 }
 
 func (c *TMDBClient) getEpisodeDetails(tvID, season, episode int) (*TMDBResult, error) {

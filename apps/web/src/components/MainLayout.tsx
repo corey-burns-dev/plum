@@ -5,7 +5,8 @@ import { TopBar } from "./TopBar";
 import { Sidebar } from "./Sidebar";
 
 export function MainLayout() {
-  const { isDockOpen } = usePlayer();
+  const { activeMode, isDockOpen, viewMode } = usePlayer();
+  const reserveDockSpace = isDockOpen && activeMode === "music" && viewMode === "docked";
 
   return (
     <div className="flex min-h-screen flex-col">
@@ -14,7 +15,7 @@ export function MainLayout() {
         <Sidebar />
         <main className="flex min-w-0 flex-1 flex-col">
           <section
-            className={`main-content flex-1 overflow-auto p-4 md:p-6 ${isDockOpen ? "main-content--with-dock" : ""}`}
+            className={`main-content flex-1 overflow-auto p-4 md:p-6 ${reserveDockSpace ? "main-content--with-dock" : ""}`}
           >
             <Outlet />
           </section>

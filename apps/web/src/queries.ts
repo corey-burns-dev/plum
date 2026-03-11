@@ -8,6 +8,8 @@ import {
 import {
   fetchLibraryMedia,
   fetchSeriesByTmdbId,
+  getHomeDashboard,
+  type HomeDashboard,
   getTranscodingSettings,
   identifyLibrary,
   listLibraries,
@@ -21,10 +23,13 @@ import {
   type ShowActionResult,
   type TranscodingSettings,
   type TranscodingSettingsResponse,
+  type UpdateLibraryPlaybackPreferencesPayload,
+  updateLibraryPlaybackPreferences,
   updateTranscodingSettings,
 } from "./api";
 
 export const queryKeys = {
+  home: ["home"] as const,
   libraries: ["libraries"] as const,
   library: (id: number) => ["library", id] as const,
   series: (tmdbId: number) => ["series", tmdbId] as const,
@@ -39,6 +44,15 @@ export function useLibraries(): UseQueryResult<Library[], Error> {
     queryKey: queryKeys.libraries,
     queryFn: listLibraries,
     staleTime: LIBRARIES_STALE_MS,
+  });
+}
+
+export function useHomeDashboard(options?: { enabled?: boolean }): UseQueryResult<HomeDashboard, Error> {
+  return useQuery({
+    queryKey: queryKeys.home,
+    queryFn: getHomeDashboard,
+    enabled: options?.enabled ?? true,
+    staleTime: LIBRARY_MEDIA_STALE_MS,
   });
 }
 
@@ -81,6 +95,22 @@ export function useIdentifyLibrary(): UseMutationResult<
     onSuccess: (_, { libraryId }) => {
       void queryClient.invalidateQueries({ queryKey: queryKeys.library(libraryId) });
       void queryClient.invalidateQueries({ queryKey: queryKeys.libraries });
+    },
+  });
+}
+
+export function useUpdateLibraryPlaybackPreferences(): UseMutationResult<
+  Library,
+  Error,
+  { libraryId: number; payload: UpdateLibraryPlaybackPreferencesPayload }
+> {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: ({ libraryId, payload }) => updateLibraryPlaybackPreferences(libraryId, payload),
+    onSuccess: (library) => {
+      queryClient.setQueryData<Library[]>(queryKeys.libraries, (current) =>
+        current?.map((item) => (item.id === library.id ? { ...item, ...library } : item)) ?? [library],
+      );
     },
   });
 }

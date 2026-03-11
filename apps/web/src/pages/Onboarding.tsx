@@ -1,6 +1,6 @@
 import { useState } from "react";
 import type { LibraryType } from "../api";
-import { createAdmin, createLibrary, scanLibraryById } from "../api";
+import { createAdmin, createLibrary, startLibraryScan } from "../api";
 import { useAuthActions } from "../contexts/AuthContext";
 
 type Step = "admin" | "library";
@@ -10,6 +10,7 @@ type AddedLibrary = {
   name: string;
   type: LibraryType;
   path: string;
+  phase: "queued" | "scanning" | "completed" | "failed";
   addedCount: number;
   updatedCount: number;
   removedCount: number;
@@ -105,7 +106,7 @@ export function Onboarding({ onGoToHome }: OnboardingProps) {
         type: libraryType,
         path: libraryPath.trim(),
       });
-      const result = await scanLibraryById(lib.id, { identify: false });
+      const status = await startLibraryScan(lib.id);
       setAddedLibraries((prev) => [
         ...prev,
         {
@@ -113,11 +114,12 @@ export function Onboarding({ onGoToHome }: OnboardingProps) {
           name: lib.name,
           type: lib.type,
           path: lib.path,
-          addedCount: result.added,
-          updatedCount: result.updated,
-          removedCount: result.removed,
-          unmatchedCount: result.unmatched,
-          skippedCount: result.skipped,
+          phase: status.phase === "idle" ? "queued" : status.phase,
+          addedCount: status.added,
+          updatedCount: status.updated,
+          removedCount: status.removed,
+          unmatchedCount: status.unmatched,
+          skippedCount: status.skipped,
         },
       ]);
       setLibraryName("");
@@ -137,10 +139,10 @@ export function Onboarding({ onGoToHome }: OnboardingProps) {
       for (const def of DEFAULT_LIBRARIES) {
         if (existingPaths.has(def.path)) continue;
         const lib = await createLibrary({ name: def.name, type: def.type, path: def.path });
-        let addedCount = 0;
+        let phase: AddedLibrary["phase"] = "queued";
         try {
-          const result = await scanLibraryById(lib.id, { identify: false });
-          addedCount = result.added;
+          const status = await startLibraryScan(lib.id);
+          phase = status.phase === "idle" ? "queued" : status.phase;
         } catch {
           // Path may not exist (e.g. /anime not mounted); library is still created
         }
@@ -151,7 +153,8 @@ export function Onboarding({ onGoToHome }: OnboardingProps) {
             name: lib.name,
             type: lib.type,
             path: lib.path,
-            addedCount,
+            phase,
+            addedCount: 0,
             updatedCount: 0,
             removedCount: 0,
             unmatchedCount: 0,
@@ -314,9 +317,12 @@ export function Onboarding({ onGoToHome }: OnboardingProps) {
                 <ul className="onboarding-libraries-list">
                   {addedLibraries.map((lib) => (
                     <li key={lib.id}>
-                      <strong>{lib.name}</strong> ({lib.type}) — added {lib.addedCount}, updated{" "}
-                      {lib.updatedCount}, unmatched {lib.unmatchedCount}, skipped {lib.skippedCount}
-                      , removed {lib.removedCount}
+                      <strong>{lib.name}</strong> ({lib.type}) — import {lib.phase}
+                      {lib.addedCount > 0 ? `, added ${lib.addedCount}` : ""}
+                      {lib.updatedCount > 0 ? `, updated ${lib.updatedCount}` : ""}
+                      {lib.unmatchedCount > 0 ? `, unmatched ${lib.unmatchedCount}` : ""}
+                      {lib.skippedCount > 0 ? `, skipped ${lib.skippedCount}` : ""}
+                      {lib.removedCount > 0 ? `, removed ${lib.removedCount}` : ""}
                     </li>
                   ))}
                 </ul>

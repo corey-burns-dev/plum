@@ -10,11 +10,15 @@ type Pipeline struct {
 	movieProvider         MovieProvider
 	tvProviders           []TVProvider
 	seriesDetailsProvider SeriesDetailsProvider
+	imdbRatings           IMDbRatingProvider
+	omdb                  *OMDBClient
 }
 
 // NewPipeline builds a pipeline from API keys. Empty keys skip that provider.
-func NewPipeline(tmdbKey, tvdbKey string) *Pipeline {
-	p := &Pipeline{}
+func NewPipeline(tmdbKey, tvdbKey, omdbKey string) *Pipeline {
+	p := &Pipeline{
+		omdb: NewOMDBClient(omdbKey),
+	}
 	if tmdbKey != "" {
 		tmdb := NewTMDBClient(tmdbKey)
 		p.movieProvider = tmdb
@@ -31,6 +35,10 @@ func NewPipeline(tmdbKey, tvdbKey string) *Pipeline {
 	return p
 }
 
+func (p *Pipeline) SetIMDbRatingProvider(provider IMDbRatingProvider) {
+	p.imdbRatings = provider
+}
+
 // IdentifyMovie returns the best movie match using scorer and confidence threshold.
 func (p *Pipeline) IdentifyMovie(ctx context.Context, info MediaInfo) *MatchResult {
 	if p.movieProvider == nil {
@@ -39,6 +47,7 @@ func (p *Pipeline) IdentifyMovie(ctx context.Context, info MediaInfo) *MatchResu
 	if info.TMDBID > 0 {
 		if lookup, ok := p.movieProvider.(MovieLookupProvider); ok {
 			if res, err := lookup.GetMovie(ctx, strconv.Itoa(info.TMDBID)); err == nil && res != nil {
+				p.enrichIMDbRating(ctx, res)
 				return res
 			}
 		}
@@ -48,6 +57,16 @@ func (p *Pipeline) IdentifyMovie(ctx context.Context, info MediaInfo) *MatchResu
 		return nil
 	}
 	best, _ := bestScored(results, info, ScoreMovie, ScoreMovieAutoMatch, ScoreMargin)
+	if best == nil {
+		return nil
+	}
+	if lookup, ok := p.movieProvider.(MovieLookupProvider); ok {
+		if detailed, err := lookup.GetMovie(ctx, best.ExternalID); err == nil && detailed != nil {
+			p.enrichIMDbRating(ctx, detailed)
+			return detailed
+		}
+	}
+	p.enrichIMDbRating(ctx, best)
 	return best
 }
 
@@ -80,9 +99,11 @@ func (p *Pipeline) IdentifyAnime(ctx context.Context, info MediaInfo) *MatchResu
 	}
 	if info.Season > 0 && info.Episode > 0 {
 		if ep, err := tmdbProv.GetEpisode(ctx, best.ExternalID, info.Season, info.Episode); err == nil && ep != nil {
+			p.enrichIMDbRating(ctx, ep)
 			return ep
 		}
 	}
+	p.enrichIMDbRating(ctx, best)
 	return best
 }
 
@@ -124,9 +145,11 @@ func (p *Pipeline) bestSeriesMatch(ctx context.Context, info MediaInfo, candidat
 	}
 	if info.Season > 0 && info.Episode > 0 {
 		if ep := p.getEpisodeForMatch(ctx, best.Provider, best.ExternalID, info.Season, info.Episode); ep != nil {
+			p.enrichIMDbRating(ctx, ep)
 			return ep
 		}
 	}
+	p.enrichIMDbRating(ctx, best)
 	return best
 }
 
@@ -202,6 +225,24 @@ func (p *Pipeline) lookupTMDBTV(ctx context.Context, info MediaInfo) *MatchResul
 		ReleaseDate: details.FirstAirDate,
 		Provider:    "tmdb",
 		ExternalID:  seriesID,
+	}
+}
+
+func (p *Pipeline) enrichIMDbRating(ctx context.Context, result *MatchResult) {
+	if result == nil || result.IMDbID == "" || result.IMDbRating > 0 {
+		return
+	}
+	if p.imdbRatings != nil {
+		if rating, err := p.imdbRatings.GetIMDbRatingByID(ctx, result.IMDbID); err == nil && rating > 0 {
+			result.IMDbRating = rating
+			return
+		}
+	}
+	if p.omdb == nil {
+		return
+	}
+	if rating, err := p.omdb.GetIMDbRatingByID(ctx, result.IMDbID); err == nil && rating > 0 {
+		result.IMDbRating = rating
 	}
 }
 

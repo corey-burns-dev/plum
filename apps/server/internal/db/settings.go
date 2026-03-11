@@ -86,6 +86,12 @@ type TranscodingSettings struct {
 	EncodeFormats                 EncodeFormatSettings `json:"encodeFormats"`
 	PreferredHardwareEncodeFormat string               `json:"preferredHardwareEncodeFormat"`
 	AllowSoftwareFallback         bool                 `json:"allowSoftwareFallback"`
+	CRF                           int                  `json:"crf"`
+	AudioBitrate                  string               `json:"audioBitrate"`
+	AudioChannels                 int                  `json:"audioChannels"`
+	Threads                       int                  `json:"threads"`
+	KeyframeInterval              int                  `json:"keyframeInterval"`
+	MaxBitrate                    string               `json:"maxBitrate"`
 }
 
 type TranscodingSettingsWarning struct {
@@ -116,6 +122,12 @@ func DefaultTranscodingSettings() TranscodingSettings {
 		},
 		PreferredHardwareEncodeFormat: "h264",
 		AllowSoftwareFallback:         true,
+		CRF:                           22,
+		AudioBitrate:                  "192k",
+		AudioChannels:                 2,
+		Threads:                       0,
+		KeyframeInterval:              48,
+		MaxBitrate:                    "",
 	}
 }
 
@@ -140,6 +152,23 @@ func NormalizeTranscodingSettings(settings TranscodingSettings) TranscodingSetti
 			settings.PreferredHardwareEncodeFormat = defaults.PreferredHardwareEncodeFormat
 		}
 	}
+	if settings.CRF <= 0 || settings.CRF > 51 {
+		settings.CRF = defaults.CRF
+	}
+	settings.AudioBitrate = strings.TrimSpace(settings.AudioBitrate)
+	if settings.AudioBitrate == "" {
+		settings.AudioBitrate = defaults.AudioBitrate
+	}
+	if settings.AudioChannels < 0 {
+		settings.AudioChannels = defaults.AudioChannels
+	}
+	if settings.Threads < 0 {
+		settings.Threads = defaults.Threads
+	}
+	if settings.KeyframeInterval <= 0 {
+		settings.KeyframeInterval = defaults.KeyframeInterval
+	}
+	settings.MaxBitrate = strings.TrimSpace(settings.MaxBitrate)
 	return settings
 }
 

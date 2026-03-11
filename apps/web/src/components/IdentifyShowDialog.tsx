@@ -30,7 +30,7 @@ export function IdentifyShowDialog({
 }: IdentifyShowDialogProps) {
   const { queueLibraryIdentify } = useIdentifyQueue();
   const [query, setQuery] = useState(showTitle);
-  const [results, setResults] = useState<SeriesSearchResult[]>([]);
+  const [results, setResults] = useState<readonly SeriesSearchResult[]>([]);
   const [loading, setLoading] = useState(false);
   const [identifying, setIdentifying] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -120,21 +120,21 @@ export function IdentifyShowDialog({
         )}
         <div className="max-h-[60vh] overflow-y-auto space-y-2">
           {results.length === 0 && !loading && query.trim() && !error && (
-            <p className="text-sm text-[var(--plum-muted)]">No results.</p>
+            <p className="text-sm text-(--plum-muted)">No results.</p>
           )}
           {results.map((r) => (
             <div
               key={r.ExternalID}
-              className="flex items-center gap-3 rounded-[var(--radius-md)] border border-[var(--plum-border)] p-2 bg-[var(--plum-panel)]"
+              className="flex items-center gap-3 rounded-md border border-(--plum-border) p-2 bg-(--plum-panel)"
             >
               <img
                 src={r.PosterURL || "/placeholder-poster.png"}
                 alt=""
-                className="w-12 h-[72px] object-cover rounded-[var(--radius-sm)]"
+                className="w-12 h-18 object-cover rounded-sm"
               />
               <div className="flex-1 min-w-0">
                 <div className="font-medium truncate">{r.Title}</div>
-                {year(r) && <div className="text-sm text-[var(--plum-muted)]">{year(r)}</div>}
+                {year(r) && <div className="text-sm text-(--plum-muted)">{year(r)}</div>}
               </div>
               <Button
                 type="button"

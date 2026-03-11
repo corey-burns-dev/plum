@@ -1,8 +1,9 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { Link, useParams } from "react-router-dom";
 import type { MediaItem } from "../api";
 import { BASE_URL } from "../api";
 import { usePlayer } from "../contexts/PlayerContext";
+import { formatRemainingTime, shouldShowProgress } from "../lib/progress";
 import { getShowKey, sortEpisodes } from "../lib/showGrouping";
 import { tmdbBackdropUrl, tmdbPosterUrl } from "@plum/shared";
 import { useLibraryMedia, useSeries } from "../queries";
@@ -38,6 +39,7 @@ export function ShowDetail() {
   const { data: series, isLoading: seriesLoading } = useSeries(tmdbId);
   const { playEpisode } = usePlayer();
   const [expandedEpisodeId, setExpandedEpisodeId] = useState<number | null>(null);
+  const [selectedSeason, setSelectedSeason] = useState<number | null>(null);
 
   const episodes = useMemo(() => {
     if (!showKey) return [];
@@ -58,12 +60,31 @@ export function ShowDetail() {
     const seasons = Array.from(map.keys()).toSorted((a, b) => a - b);
     return { map, seasons };
   }, [episodes]);
+  const activeSeason = selectedSeason ?? episodesBySeason.seasons[0] ?? null;
+  const activeSeasonEpisodes =
+    activeSeason == null ? [] : (episodesBySeason.map.get(activeSeason) ?? []);
+  const activeSeasonLabel =
+    activeSeason == null ? "" : activeSeason === 0 ? "Specials" : `Season ${activeSeason}`;
 
   const showTitle =
     series?.name ??
     (episodes.length > 0
       ? episodes[0].title.replace(/\s*-\s*S\d+.*$/i, "").trim()
       : (showKey ?? "Show"));
+  const showImdbRating =
+    series == null ? episodes.find((episode) => (episode.imdb_rating ?? 0) > 0)?.imdb_rating : undefined;
+
+  useEffect(() => {
+    if (episodesBySeason.seasons.length === 0) {
+      setSelectedSeason(null);
+      return;
+    }
+    setSelectedSeason((current) =>
+      current != null && episodesBySeason.seasons.includes(current)
+        ? current
+        : episodesBySeason.seasons[0],
+    );
+  }, [episodesBySeason.seasons]);
 
   if (libraryId == null || showKey == null) {
     return (
@@ -125,6 +146,9 @@ export function ShowDetail() {
         )}
         <div className="show-detail-meta">
           <h1 className="show-detail-title">{showTitle}</h1>
+          {showImdbRating ? (
+            <p className="show-detail-date">IMDb {showImdbRating.toFixed(1)}</p>
+          ) : null}
           {series?.first_air_date && <p className="show-detail-date">{series.first_air_date}</p>}
           {!seriesLoading && series?.overview && (
             <p className="show-detail-overview">{series.overview}</p>
@@ -135,71 +159,95 @@ export function ShowDetail() {
         <p className="auth-muted">No episodes found for this show.</p>
       ) : (
         <div className="show-detail-seasons">
-          {episodesBySeason.seasons.map((seasonNum) => {
-            const seasonEps = episodesBySeason.map.get(seasonNum) ?? [];
-            const label = seasonNum === 0 ? "Specials" : `Season ${seasonNum}`;
-            return (
-              <section key={seasonNum} className="show-detail-season">
-                <h2 className="show-detail-season-title">
-                  {label}
-                  <span className="show-detail-season-count">
-                    {seasonEps.length} episode{seasonEps.length !== 1 ? "s" : ""}
+          <div className="show-detail-season-picker" role="tablist" aria-label="Select season">
+            {episodesBySeason.seasons.map((seasonNum) => {
+              const label = seasonNum === 0 ? "Specials" : `Season ${seasonNum}`;
+              const count = episodesBySeason.map.get(seasonNum)?.length ?? 0;
+              const isActive = activeSeason === seasonNum;
+              return (
+                <button
+                  key={seasonNum}
+                  type="button"
+                  role="tab"
+                  aria-selected={isActive}
+                  className={`show-detail-season-pill${isActive ? " is-active" : ""}`}
+                  onClick={() => setSelectedSeason(seasonNum)}
+                >
+                  <span>{label}</span>
+                  <span className="show-detail-season-pill__count">{count}</span>
+                </button>
+              );
+            })}
+          </div>
+
+          <section className="show-detail-season">
+            <h2 className="show-detail-season-title">
+              {activeSeasonLabel}
+              <span className="show-detail-season-count">
+                {activeSeasonEpisodes.length} episode{activeSeasonEpisodes.length !== 1 ? "s" : ""}
+              </span>
+            </h2>
+            <ul className="episodes-list show-detail-episodes">
+              {activeSeasonEpisodes.map((ep) => (
+                <li key={ep.id} className="episode-row episode-row-detail">
+                  <div className="episode-thumbnail-wrap">
+                    <img
+                      src={`${BASE_URL}/api/media/${ep.id}/thumbnail`}
+                      alt=""
+                      className="episode-thumbnail"
+                    />
+                  </div>
+                  <span className="episode-season-ep" title={ep.title}>
+                    {seasonEpisodeLabel(ep)}
                   </span>
-                </h2>
-                <ul className="episodes-list show-detail-episodes">
-                  {seasonEps.map((ep) => (
-                    <li key={ep.id} className="episode-row episode-row-detail">
-                      <div className="episode-thumbnail-wrap">
-                        <img
-                          src={`${BASE_URL}/api/media/${ep.id}/thumbnail`}
-                          alt=""
-                          className="episode-thumbnail"
-                        />
-                      </div>
-                      <span className="episode-season-ep" title={ep.title}>
-                        {seasonEpisodeLabel(ep)}
-                      </span>
-                      <div className="episode-info">
-                        <span className="episode-title" title={ep.title}>
-                          {ep.title}
-                        </span>
-                        {ep.match_status && ep.match_status !== "identified" && (
-                          <span className="episode-release-date">{ep.match_status}</span>
-                        )}
-                        {ep.release_date && (
-                          <span className="episode-release-date">{ep.release_date}</span>
-                        )}
-                        {ep.overview && (
-                          <button
-                            type="button"
-                            className="episode-overview-toggle"
-                            onClick={() =>
-                              setExpandedEpisodeId((id) => (id === ep.id ? null : ep.id))
-                            }
-                          >
-                            {expandedEpisodeId === ep.id ? "Hide" : "Show"} summary
-                          </button>
-                        )}
-                        {expandedEpisodeId === ep.id && ep.overview && (
-                          <p className="episode-overview">{ep.overview}</p>
-                        )}
-                      </div>
-                      {ep.duration > 0 && (
-                        <span className="episode-duration">{formatDuration(ep.duration)}</span>
-                      )}
+                  <div className="episode-info">
+                    <span className="episode-title" title={ep.title}>
+                      {ep.title}
+                    </span>
+                    {ep.match_status && ep.match_status !== "identified" && (
+                      <span className="episode-release-date">{ep.match_status}</span>
+                    )}
+                    {ep.release_date && <span className="episode-release-date">{ep.release_date}</span>}
+                    {ep.overview && (
                       <button
                         type="button"
-                        className="play-button small"
-                        onClick={() => playEpisode(ep)}
+                        className="episode-overview-toggle"
+                        onClick={() => setExpandedEpisodeId((id) => (id === ep.id ? null : ep.id))}
                       >
-                        Play
+                        {expandedEpisodeId === ep.id ? "Hide" : "Show"} summary
                       </button>
-                    </li>
-                  ))}
-                </ul>
-              </section>
-            );
-          })}
+                    )}
+                    {expandedEpisodeId === ep.id && ep.overview && (
+                      <p className="episode-overview">{ep.overview}</p>
+                    )}
+                    {shouldShowProgress(ep) && (
+                      <div className="mt-2 flex flex-col gap-1">
+                        <div className="h-1.5 overflow-hidden rounded-full bg-white/10">
+                          <div
+                            className="h-full rounded-full bg-[#f7c44f]"
+                            style={{ width: `${ep.progress_percent ?? 0}%` }}
+                          />
+                        </div>
+                        <span className="text-xs text-[var(--plum-muted)]">
+                          {formatRemainingTime(ep.remaining_seconds)}
+                        </span>
+                      </div>
+                    )}
+                  </div>
+                  {ep.duration > 0 && (
+                    <span className="episode-duration">{formatDuration(ep.duration)}</span>
+                  )}
+                  <button
+                    type="button"
+                    className="play-button small"
+                    onClick={() => playEpisode(ep)}
+                  >
+                    Play
+                  </button>
+                </li>
+              ))}
+            </ul>
+          </section>
         </div>
       )}
     </div>

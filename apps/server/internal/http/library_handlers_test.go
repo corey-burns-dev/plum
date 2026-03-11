@@ -2,10 +2,14 @@ package httpapi
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strconv"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -17,6 +21,88 @@ import (
 
 	_ "modernc.org/sqlite"
 )
+
+func TestUpdateLibraryPlaybackPreferences(t *testing.T) {
+	dbConn, err := db.InitDB(":memory:")
+	if err != nil {
+		t.Fatalf("init db: %v", err)
+	}
+	t.Cleanup(func() { _ = dbConn.Close() })
+
+	now := time.Now().UTC()
+	var userID int
+	if err := dbConn.QueryRow(
+		`INSERT INTO users (email, password_hash, is_admin, created_at) VALUES (?, ?, 1, ?) RETURNING id`,
+		"test@test.com",
+		"hash",
+		now,
+	).Scan(&userID); err != nil {
+		t.Fatalf("insert user: %v", err)
+	}
+
+	var libraryID int
+	if err := dbConn.QueryRow(
+		`INSERT INTO libraries (user_id, name, type, path, created_at) VALUES (?, ?, ?, ?, ?) RETURNING id`,
+		userID,
+		"Anime",
+		db.LibraryTypeAnime,
+		"/anime",
+		now,
+	).Scan(&libraryID); err != nil {
+		t.Fatalf("insert library: %v", err)
+	}
+
+	handler := &LibraryHandler{DB: dbConn}
+	req := httptest.NewRequest(
+		http.MethodPut,
+		"/api/libraries/"+strconv.Itoa(libraryID)+"/playback-preferences",
+		strings.NewReader(`{"preferred_audio_language":"ja","preferred_subtitle_language":"en","subtitles_enabled_by_default":true}`),
+	)
+	req.Header.Set("Content-Type", "application/json")
+	rctx := chi.NewRouteContext()
+	rctx.URLParams.Add("id", strconv.Itoa(libraryID))
+	req = req.WithContext(context.WithValue(withUser(req.Context(), &db.User{ID: userID, IsAdmin: true}), chi.RouteCtxKey, rctx))
+	rec := httptest.NewRecorder()
+
+	handler.UpdateLibraryPlaybackPreferences(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d body=%s", rec.Code, rec.Body.String())
+	}
+
+	var payload struct {
+		PreferredAudioLanguage    string `json:"preferred_audio_language"`
+		PreferredSubtitleLanguage string `json:"preferred_subtitle_language"`
+		SubtitlesEnabledByDefault bool   `json:"subtitles_enabled_by_default"`
+	}
+	if err := json.NewDecoder(rec.Body).Decode(&payload); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if payload.PreferredAudioLanguage != "ja" {
+		t.Fatalf("preferred_audio_language = %q", payload.PreferredAudioLanguage)
+	}
+	if payload.PreferredSubtitleLanguage != "en" {
+		t.Fatalf("preferred_subtitle_language = %q", payload.PreferredSubtitleLanguage)
+	}
+	if !payload.SubtitlesEnabledByDefault {
+		t.Fatalf("subtitles_enabled_by_default = false")
+	}
+
+	var (
+		preferredAudio    sql.NullString
+		preferredSubtitle sql.NullString
+		subtitlesEnabled  sql.NullBool
+	)
+	if err := dbConn.QueryRow(
+		`SELECT preferred_audio_language, preferred_subtitle_language, subtitles_enabled_by_default FROM libraries WHERE id = ?`,
+		libraryID,
+	).Scan(&preferredAudio, &preferredSubtitle, &subtitlesEnabled); err != nil {
+		t.Fatalf("query library: %v", err)
+	}
+	if preferredAudio.String != "ja" || preferredSubtitle.String != "en" || !subtitlesEnabled.Bool {
+		t.Fatalf("unexpected library prefs: audio=%q subtitle=%q enabled=%v", preferredAudio.String, preferredSubtitle.String, subtitlesEnabled.Bool)
+	}
+}
 
 type identifyStub struct {
 	tv    func(context.Context, metadata.MediaInfo) *metadata.MatchResult
@@ -232,7 +318,7 @@ func TestIdentifyLibrary_TimesOutHungRowsAndSkipsFinishedRows(t *testing.T) {
 	}
 	var finishedID int
 	finishedPath := "/movies/Finished Movie (2024)/Finished Movie (2024).mp4"
-	if err := dbConn.QueryRow(`INSERT INTO movies (library_id, title, path, duration, match_status, tmdb_id, poster_path) VALUES (?, ?, ?, ?, ?, ?, ?) RETURNING id`, libraryID, "Finished Movie", finishedPath, 0, db.MatchStatusIdentified, 999, "/poster.jpg").Scan(&finishedID); err != nil {
+	if err := dbConn.QueryRow(`INSERT INTO movies (library_id, title, path, duration, match_status, tmdb_id, poster_path, imdb_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?) RETURNING id`, libraryID, "Finished Movie", finishedPath, 0, db.MatchStatusIdentified, 999, "/poster.jpg", "tt9999999").Scan(&finishedID); err != nil {
 		t.Fatalf("insert finished movie: %v", err)
 	}
 
@@ -301,5 +387,370 @@ func TestIdentifyLibrary_TimesOutHungRowsAndSkipsFinishedRows(t *testing.T) {
 	}
 	if finishedTitle != "Finished Movie" || finishedStatus != db.MatchStatusIdentified || finishedTMDBID != 999 {
 		t.Fatalf("unexpected finished movie state: title=%q status=%q tmdb=%d", finishedTitle, finishedStatus, finishedTMDBID)
+	}
+}
+
+func TestLibraryScanStatus_ReturnsIdleWhenNoScanHasStarted(t *testing.T) {
+	dbConn, err := db.InitDB(":memory:")
+	if err != nil {
+		t.Fatalf("init db: %v", err)
+	}
+	t.Cleanup(func() { _ = dbConn.Close() })
+
+	now := time.Now().UTC()
+	var userID int
+	if err := dbConn.QueryRow(`INSERT INTO users (email, password_hash, is_admin, created_at) VALUES (?, ?, 1, ?) RETURNING id`, "test@test.com", "hash", now).Scan(&userID); err != nil {
+		t.Fatalf("insert user: %v", err)
+	}
+	var libraryID int
+	if err := dbConn.QueryRow(`INSERT INTO libraries (user_id, name, type, path, created_at) VALUES (?, ?, ?, ?, ?) RETURNING id`, userID, "TV", db.LibraryTypeTV, "/tv", now).Scan(&libraryID); err != nil {
+		t.Fatalf("insert library: %v", err)
+	}
+
+	handler := &LibraryHandler{
+		DB:       dbConn,
+		ScanJobs: NewLibraryScanManager(dbConn, nil, nil),
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/api/libraries/"+strconv.Itoa(libraryID)+"/scan", nil)
+	rctx := chi.NewRouteContext()
+	rctx.URLParams.Add("id", strconv.Itoa(libraryID))
+	req = req.WithContext(context.WithValue(withUser(req.Context(), &db.User{ID: userID, IsAdmin: true}), chi.RouteCtxKey, rctx))
+	rec := httptest.NewRecorder()
+
+	handler.GetLibraryScanStatus(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d body=%s", rec.Code, rec.Body.String())
+	}
+	var payload struct {
+		LibraryID int    `json:"libraryId"`
+		Phase     string `json:"phase"`
+	}
+	if err := json.NewDecoder(rec.Body).Decode(&payload); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if payload.LibraryID != libraryID || payload.Phase != "idle" {
+		t.Fatalf("unexpected payload: %+v", payload)
+	}
+}
+
+func TestStartLibraryScan_ImportsMediaInBackground(t *testing.T) {
+	dbConn, err := db.InitDB(filepath.Join(t.TempDir(), "plum.db"))
+	if err != nil {
+		t.Fatalf("init db: %v", err)
+	}
+	t.Cleanup(func() { _ = dbConn.Close() })
+
+	root := t.TempDir()
+	showDir := filepath.Join(root, "Test Show", "Season 1")
+	if err := os.MkdirAll(showDir, 0o755); err != nil {
+		t.Fatalf("mkdir show dir: %v", err)
+	}
+	file := filepath.Join(showDir, "Test Show - S01E01.mkv")
+	if err := os.WriteFile(file, []byte("not a real video"), 0o644); err != nil {
+		t.Fatalf("write media file: %v", err)
+	}
+
+	now := time.Now().UTC()
+	var userID int
+	if err := dbConn.QueryRow(`INSERT INTO users (email, password_hash, is_admin, created_at) VALUES (?, ?, 1, ?) RETURNING id`, "test@test.com", "hash", now).Scan(&userID); err != nil {
+		t.Fatalf("insert user: %v", err)
+	}
+	var libraryID int
+	if err := dbConn.QueryRow(`INSERT INTO libraries (user_id, name, type, path, created_at) VALUES (?, ?, ?, ?, ?) RETURNING id`, userID, "TV", db.LibraryTypeTV, root, now).Scan(&libraryID); err != nil {
+		t.Fatalf("insert library: %v", err)
+	}
+
+	scanJobs := NewLibraryScanManager(dbConn, nil, nil)
+	handler := &LibraryHandler{
+		DB:       dbConn,
+		ScanJobs: scanJobs,
+	}
+
+	req := httptest.NewRequest(http.MethodPost, "/api/libraries/"+strconv.Itoa(libraryID)+"/scan/start?identify=false", nil)
+	rctx := chi.NewRouteContext()
+	rctx.URLParams.Add("id", strconv.Itoa(libraryID))
+	req = req.WithContext(context.WithValue(withUser(req.Context(), &db.User{ID: userID, IsAdmin: true}), chi.RouteCtxKey, rctx))
+	rec := httptest.NewRecorder()
+
+	handler.StartLibraryScan(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d body=%s", rec.Code, rec.Body.String())
+	}
+
+	deadline := time.Now().Add(3 * time.Second)
+	for {
+		status := scanJobs.status(libraryID)
+		if status.Phase == libraryScanPhaseCompleted {
+			break
+		}
+		if status.Phase == libraryScanPhaseFailed {
+			t.Fatalf("scan failed: %+v", status)
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("scan did not complete: %+v", status)
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+
+	var count int
+	if err := dbConn.QueryRow(`SELECT COUNT(1) FROM tv_episodes WHERE library_id = ?`, libraryID).Scan(&count); err != nil {
+		t.Fatalf("count imported rows: %v", err)
+	}
+	if count != 1 {
+		t.Fatalf("expected 1 imported row, got %d", count)
+	}
+}
+
+func TestLibraryScanManager_RecoverResumesQueuedScan(t *testing.T) {
+	dbConn, err := db.InitDB(filepath.Join(t.TempDir(), "plum.db"))
+	if err != nil {
+		t.Fatalf("init db: %v", err)
+	}
+	t.Cleanup(func() { _ = dbConn.Close() })
+
+	root := t.TempDir()
+	showDir := filepath.Join(root, "Recovered Show", "Season 1")
+	if err := os.MkdirAll(showDir, 0o755); err != nil {
+		t.Fatalf("mkdir show dir: %v", err)
+	}
+	file := filepath.Join(showDir, "Recovered Show - S01E01.mkv")
+	if err := os.WriteFile(file, []byte("not a real video"), 0o644); err != nil {
+		t.Fatalf("write media file: %v", err)
+	}
+
+	now := time.Now().UTC()
+	var userID int
+	if err := dbConn.QueryRow(`INSERT INTO users (email, password_hash, is_admin, created_at) VALUES (?, ?, 1, ?) RETURNING id`, "test@test.com", "hash", now).Scan(&userID); err != nil {
+		t.Fatalf("insert user: %v", err)
+	}
+	var libraryID int
+	if err := dbConn.QueryRow(`INSERT INTO libraries (user_id, name, type, path, created_at) VALUES (?, ?, ?, ?, ?) RETURNING id`, userID, "TV", db.LibraryTypeTV, root, now).Scan(&libraryID); err != nil {
+		t.Fatalf("insert library: %v", err)
+	}
+
+	if err := db.UpsertLibraryJobStatus(dbConn, db.LibraryJobStatus{
+		LibraryID:         libraryID,
+		Path:              root,
+		Type:              db.LibraryTypeTV,
+		Phase:             libraryScanPhaseQueued,
+		IdentifyPhase:     libraryIdentifyPhaseIdle,
+		IdentifyRequested: false,
+		StartedAt:         now.Format(time.RFC3339),
+	}); err != nil {
+		t.Fatalf("seed library job status: %v", err)
+	}
+
+	scanJobs := NewLibraryScanManager(dbConn, nil, nil)
+	if err := scanJobs.Recover(); err != nil {
+		t.Fatalf("recover scan jobs: %v", err)
+	}
+
+	deadline := time.Now().Add(3 * time.Second)
+	for {
+		status := scanJobs.status(libraryID)
+		if status.Phase == libraryScanPhaseCompleted {
+			break
+		}
+		if status.Phase == libraryScanPhaseFailed {
+			t.Fatalf("scan failed after recovery: %+v", status)
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("recovered scan did not complete: %+v", status)
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+
+	var count int
+	if err := dbConn.QueryRow(`SELECT COUNT(1) FROM tv_episodes WHERE library_id = ?`, libraryID).Scan(&count); err != nil {
+		t.Fatalf("count imported rows: %v", err)
+	}
+	if count != 1 {
+		t.Fatalf("expected 1 imported row after recovery, got %d", count)
+	}
+}
+
+func TestListLibraryMedia_EmbeddedSubtitlesUseCamelCaseStreamIndex(t *testing.T) {
+	dbConn, err := db.InitDB(":memory:")
+	if err != nil {
+		t.Fatalf("init db: %v", err)
+	}
+	t.Cleanup(func() { _ = dbConn.Close() })
+
+	now := time.Now().UTC()
+	var userID int
+	if err := dbConn.QueryRow(
+		`INSERT INTO users (email, password_hash, is_admin, created_at) VALUES (?, ?, 1, ?) RETURNING id`,
+		"test@test.com",
+		"hash",
+		now,
+	).Scan(&userID); err != nil {
+		t.Fatalf("insert user: %v", err)
+	}
+	var libraryID int
+	if err := dbConn.QueryRow(
+		`INSERT INTO libraries (user_id, name, type, path, created_at) VALUES (?, ?, ?, ?, ?) RETURNING id`,
+		userID,
+		"TV",
+		db.LibraryTypeTV,
+		"/tv",
+		now,
+	).Scan(&libraryID); err != nil {
+		t.Fatalf("insert library: %v", err)
+	}
+	var episodeID int
+	if err := dbConn.QueryRow(
+		`INSERT INTO tv_episodes (library_id, title, path, duration, match_status, season, episode) VALUES (?, ?, ?, ?, ?, ?, ?) RETURNING id`,
+		libraryID,
+		"Test Show - S01E01",
+		"/tv/Test Show/Season 1/Test Show - S01E01.mkv",
+		0,
+		db.MatchStatusLocal,
+		1,
+		1,
+	).Scan(&episodeID); err != nil {
+		t.Fatalf("insert episode: %v", err)
+	}
+	var mediaID int
+	if err := dbConn.QueryRow(`INSERT INTO media_global (kind, ref_id) VALUES (?, ?) RETURNING id`, db.LibraryTypeTV, episodeID).
+		Scan(&mediaID); err != nil {
+		t.Fatalf("insert media global row: %v", err)
+	}
+	if _, err := dbConn.Exec(
+		`INSERT INTO embedded_subtitles (media_id, stream_index, language, title) VALUES (?, ?, ?, ?)`,
+		mediaID,
+		3,
+		"eng",
+		"English",
+	); err != nil {
+		t.Fatalf("insert embedded subtitle: %v", err)
+	}
+
+	handler := &LibraryHandler{DB: dbConn}
+	req := httptest.NewRequest(http.MethodGet, "/api/libraries/"+strconv.Itoa(libraryID)+"/media", nil)
+	rctx := chi.NewRouteContext()
+	rctx.URLParams.Add("id", strconv.Itoa(libraryID))
+	req = req.WithContext(context.WithValue(withUser(req.Context(), &db.User{ID: userID, IsAdmin: true}), chi.RouteCtxKey, rctx))
+	rec := httptest.NewRecorder()
+
+	handler.ListLibraryMedia(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d body=%s", rec.Code, rec.Body.String())
+	}
+
+	var payload []map[string]any
+	if err := json.NewDecoder(rec.Body).Decode(&payload); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if len(payload) != 1 {
+		t.Fatalf("expected 1 media item, got %d", len(payload))
+	}
+	embedded, ok := payload[0]["embeddedSubtitles"].([]any)
+	if !ok || len(embedded) != 1 {
+		t.Fatalf("unexpected embeddedSubtitles payload: %#v", payload[0]["embeddedSubtitles"])
+	}
+	entry, ok := embedded[0].(map[string]any)
+	if !ok {
+		t.Fatalf("unexpected embedded subtitle entry: %#v", embedded[0])
+	}
+	if _, exists := entry["stream_index"]; exists {
+		t.Fatalf("embedded subtitle should not include stream_index: %#v", entry)
+	}
+	if got, ok := entry["streamIndex"].(float64); !ok || got != 3 {
+		t.Fatalf("embedded subtitle streamIndex = %#v", entry["streamIndex"])
+	}
+}
+
+func TestListLibraryMedia_EmbeddedAudioTracksUseCamelCaseStreamIndex(t *testing.T) {
+	dbConn, err := db.InitDB(":memory:")
+	if err != nil {
+		t.Fatalf("init db: %v", err)
+	}
+	defer dbConn.Close()
+
+	var userID int
+	if err := dbConn.QueryRow(
+		`INSERT INTO users (email, password_hash, is_admin, created_at) VALUES (?, ?, ?, CURRENT_TIMESTAMP) RETURNING id`,
+		"audio@test.local",
+		"hash",
+		true,
+	).Scan(&userID); err != nil {
+		t.Fatalf("insert user: %v", err)
+	}
+
+	var libraryID int
+	if err := dbConn.QueryRow(
+		`INSERT INTO libraries (user_id, name, type, path, created_at) VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP) RETURNING id`,
+		userID,
+		"Movies",
+		db.LibraryTypeMovie,
+		"/movies",
+	).Scan(&libraryID); err != nil {
+		t.Fatalf("insert library: %v", err)
+	}
+
+	var movieID int
+	if err := dbConn.QueryRow(
+		`INSERT INTO movies (library_id, title, path, duration, match_status) VALUES (?, ?, ?, ?, ?) RETURNING id`,
+		libraryID,
+		"Track Test",
+		"/movies/Track Test (2025)/Track Test.mkv",
+		0,
+		db.MatchStatusLocal,
+	).Scan(&movieID); err != nil {
+		t.Fatalf("insert movie: %v", err)
+	}
+
+	var mediaID int
+	if err := dbConn.QueryRow(`INSERT INTO media_global (kind, ref_id) VALUES (?, ?) RETURNING id`, db.LibraryTypeMovie, movieID).
+		Scan(&mediaID); err != nil {
+		t.Fatalf("insert media global row: %v", err)
+	}
+	if _, err := dbConn.Exec(
+		`INSERT INTO embedded_audio_tracks (media_id, stream_index, language, title) VALUES (?, ?, ?, ?)`,
+		mediaID,
+		2,
+		"jpn",
+		"Japanese Stereo",
+	); err != nil {
+		t.Fatalf("insert embedded audio track: %v", err)
+	}
+
+	handler := &LibraryHandler{DB: dbConn}
+	req := httptest.NewRequest(http.MethodGet, "/api/libraries/"+strconv.Itoa(libraryID)+"/media", nil)
+	rctx := chi.NewRouteContext()
+	rctx.URLParams.Add("id", strconv.Itoa(libraryID))
+	req = req.WithContext(context.WithValue(withUser(req.Context(), &db.User{ID: userID, IsAdmin: true}), chi.RouteCtxKey, rctx))
+	rec := httptest.NewRecorder()
+
+	handler.ListLibraryMedia(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d body=%s", rec.Code, rec.Body.String())
+	}
+
+	var payload []map[string]any
+	if err := json.NewDecoder(rec.Body).Decode(&payload); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if len(payload) != 1 {
+		t.Fatalf("expected 1 media item, got %d", len(payload))
+	}
+	audioTracks, ok := payload[0]["embeddedAudioTracks"].([]any)
+	if !ok || len(audioTracks) != 1 {
+		t.Fatalf("unexpected embeddedAudioTracks payload: %#v", payload[0]["embeddedAudioTracks"])
+	}
+	entry, ok := audioTracks[0].(map[string]any)
+	if !ok {
+		t.Fatalf("unexpected embedded audio track entry: %#v", audioTracks[0])
+	}
+	if _, exists := entry["stream_index"]; exists {
+		t.Fatalf("embedded audio track should not include stream_index: %#v", entry)
+	}
+	if got, ok := entry["streamIndex"].(float64); !ok || got != 2 {
+		t.Fatalf("embedded audio track streamIndex = %#v", entry["streamIndex"])
 	}
 }
