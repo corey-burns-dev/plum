@@ -24,6 +24,8 @@ type transcodePlan struct {
 	EncodeFormat string
 }
 
+const hlsSegmentDurationSeconds = 2
+
 func GetSettingsWarnings(settings db.TranscodingSettings) []db.TranscodingSettingsWarning {
 	settings = db.NormalizeTranscodingSettings(settings)
 	warnings := make([]db.TranscodingSettingsWarning, 0)
@@ -185,6 +187,8 @@ func buildSoftwarePlan(itemPath, outPath string, settings db.TranscodingSettings
 		"-c:v", "libx264",
 		"-crf", strconv.Itoa(settings.CRF),
 		"-preset", "veryfast",
+		"-pix_fmt", "yuv420p",
+		"-profile:v", "high",
 		"-c:a", "aac",
 		"-b:a", settings.AudioBitrate,
 	)
@@ -271,17 +275,7 @@ func buildHardwareHLSPlan(itemPath, outDir string, settings db.TranscodingSettin
 		args = append(args, "-maxrate", settings.MaxBitrate, "-bufsize", settings.MaxBitrate)
 	}
 
-	playlistPath := filepath.Join(outDir, "index.m3u8")
-	segmentPath := filepath.Join(outDir, "segment_%05d.ts")
-	args = append(args,
-		"-f", "hls",
-		"-hls_time", "4",
-		"-hls_list_size", "0",
-		"-hls_playlist_type", "event",
-		"-hls_flags", "append_list+independent_segments+temp_file",
-		"-hls_segment_filename", segmentPath,
-		playlistPath,
-	)
+	args = appendHLSOutputArgs(args, outDir)
 
 	return transcodePlan{
 		Args:         args,
@@ -306,6 +300,8 @@ func buildSoftwareHLSPlan(itemPath, outDir string, settings db.TranscodingSettin
 		"-c:v", "libx264",
 		"-preset", "veryfast",
 		"-crf", strconv.Itoa(settings.CRF),
+		"-pix_fmt", "yuv420p",
+		"-profile:v", "high",
 		"-c:a", "aac",
 		"-b:a", settings.AudioBitrate,
 	)
@@ -320,24 +316,33 @@ func buildSoftwareHLSPlan(itemPath, outDir string, settings db.TranscodingSettin
 	if settings.MaxBitrate != "" {
 		args = append(args, "-maxrate", settings.MaxBitrate, "-bufsize", settings.MaxBitrate)
 	}
-
-	playlistPath := filepath.Join(outDir, "index.m3u8")
-	segmentPath := filepath.Join(outDir, "segment_%05d.ts")
 	args = append(args,
-		"-f", "hls",
-		"-hls_time", "4",
-		"-hls_list_size", "0",
-		"-hls_playlist_type", "event",
-		"-hls_flags", "append_list+independent_segments+temp_file",
-		"-hls_segment_filename", segmentPath,
-		playlistPath,
+		"-sc_threshold", "0",
 	)
+	args = appendHLSOutputArgs(args, outDir)
 
 	return transcodePlan{
 		Args:         args,
 		Mode:         "software",
 		EncodeFormat: "h264",
 	}
+}
+
+func appendHLSOutputArgs(args []string, outDir string) []string {
+	playlistPath := filepath.Join(outDir, "index.m3u8")
+	segmentPath := filepath.Join(outDir, "segment_%05d.ts")
+	return append(args,
+		"-force_key_frames", fmt.Sprintf("expr:gte(t,n_forced*%d)", hlsSegmentDurationSeconds),
+		"-muxpreload", "0",
+		"-muxdelay", "0",
+		"-f", "hls",
+		"-hls_time", strconv.Itoa(hlsSegmentDurationSeconds),
+		"-hls_list_size", "0",
+		"-hls_playlist_type", "event",
+		"-hls_flags", "append_list+independent_segments+temp_file",
+		"-hls_segment_filename", segmentPath,
+		playlistPath,
+	)
 }
 
 func pickHardwareEncodeFormat(settings db.TranscodingSettings) string {

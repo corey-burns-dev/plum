@@ -1,4 +1,5 @@
 import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 vi.mock("../api", async () => {
   const actual = await vi.importActual<typeof import("../api")>("../api");
@@ -47,6 +48,7 @@ function PlayerHarness() {
 describe("PlayerContext playback session updates", () => {
   beforeEach(() => {
     vi.restoreAllMocks();
+    vi.spyOn(api, "listLibraries").mockResolvedValue([]);
     vi.spyOn(api, "createPlaybackSession").mockResolvedValue({
       sessionId: "session-99",
       mediaId: 99,
@@ -68,12 +70,18 @@ describe("PlayerContext playback session updates", () => {
   });
 
   it("ignores unrelated playback events and applies the active session revision", async () => {
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
+    });
+
     render(
-      <WsProvider>
-        <PlayerProvider>
-          <PlayerHarness />
-        </PlayerProvider>
-      </WsProvider>,
+      <QueryClientProvider client={queryClient}>
+        <WsProvider>
+          <PlayerProvider>
+            <PlayerHarness />
+          </PlayerProvider>
+        </WsProvider>
+      </QueryClientProvider>,
     );
 
     const MockWebSocket = globalThis.WebSocket as unknown as MockWebSocketClass;

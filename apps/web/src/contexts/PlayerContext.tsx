@@ -16,8 +16,13 @@ import {
   createPlaybackSession,
   updatePlaybackSessionAudio,
 } from "../api";
+import {
+  languageMatchesPreference,
+  resolveLibraryPlaybackPreferences,
+} from "../lib/playbackPreferences";
 import { sortMusicTracks } from "../lib/musicGrouping";
 import { sortEpisodes } from "../lib/showGrouping";
+import { useLibraries } from "../queries";
 import { useWs } from "./WsContext";
 
 export type PlaybackKind = "video" | "music";
@@ -101,7 +106,19 @@ function clampVolume(volume: number): number {
   return Math.max(0, Math.min(volume, 1));
 }
 
+function preferredInitialAudioIndex(item: MediaItem, preferredLanguage: string): number {
+  if (!preferredLanguage) return -1;
+  return (
+    item.embeddedAudioTracks?.find(
+      (track) =>
+        languageMatchesPreference(track.language, preferredLanguage) ||
+        languageMatchesPreference(track.title, preferredLanguage),
+    )?.streamIndex ?? -1
+  );
+}
+
 export function PlayerProvider({ children }: { children: ReactNode }) {
+  const { data: libraries = [] } = useLibraries();
   const [playbackSession, setPlaybackSession] = useState<PlaybackSession | null>(null);
   const [videoSession, setVideoSession] = useState<VideoSessionState | null>(null);
   const [musicBaseQueue, setMusicBaseQueue] = useState<MediaItem[]>([]);
@@ -231,7 +248,13 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
       setMusicBaseQueue([]);
       setLastEvent("");
       if (!nextItem) return;
-      createPlaybackSession(nextItem.id, { audioIndex: -1 })
+      const activeLibrary = libraries.find((library) => library.id === nextItem.library_id) ?? null;
+      const preferredAudioLanguage = resolveLibraryPlaybackPreferences(
+        activeLibrary ?? { type: nextItem.type },
+      ).preferredAudioLanguage;
+      createPlaybackSession(nextItem.id, {
+        audioIndex: preferredInitialAudioIndex(nextItem, preferredAudioLanguage),
+      })
         .then((session) => {
           if (!mountedRef.current) return;
           applyPlaybackSession(session);
@@ -241,7 +264,7 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
           setLastEvent(`Error: ${err instanceof Error ? err.message : "Failed to start playback"}`);
         });
     },
-    [applyPlaybackSession, closeVideoSession, pauseAllMediaElements],
+    [applyPlaybackSession, closeVideoSession, libraries, pauseAllMediaElements],
   );
 
   const changeAudioTrack = useCallback(

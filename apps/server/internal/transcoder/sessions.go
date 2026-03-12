@@ -7,6 +7,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"io"
 	"log"
 	"net/http"
 	"os"
@@ -19,6 +20,9 @@ import (
 	"plum/internal/db"
 	"plum/internal/ws"
 )
+
+var ffmpegCommandContext = exec.CommandContext
+var previousRevisionCancelDelay = 20 * time.Second
 
 type PlaybackSessionState struct {
 	SessionID    string `json:"sessionId"`
@@ -90,6 +94,13 @@ func (m *PlaybackSessionManager) Create(media db.MediaItem, settings db.Transcod
 	m.sessions[sessionID] = session
 	m.mu.Unlock()
 
+	log.Printf(
+		"playback session create session=%s media=%d audio_index=%d",
+		sessionID,
+		media.ID,
+		audioIndex,
+	)
+
 	return m.startRevision(session, settings, audioIndex)
 }
 
@@ -160,7 +171,7 @@ func (m *PlaybackSessionManager) ServeFile(w http.ResponseWriter, r *http.Reques
 	if !strings.HasPrefix(target, revision.dir+string(filepath.Separator)) {
 		return db.ErrNotFound
 	}
-	if _, err := os.Stat(target); err != nil {
+	if err := waitForPlaybackFile(r.Context(), target); err != nil {
 		if os.IsNotExist(err) {
 			return db.ErrNotFound
 		}
@@ -207,6 +218,14 @@ func (m *PlaybackSessionManager) startRevision(session *playbackSession, setting
 	session.revisions[revisionNumber] = revision
 	session.mu.Unlock()
 
+	log.Printf(
+		"playback revision start session=%s media=%d revision=%d audio_index=%d",
+		session.id,
+		session.media.ID,
+		revision.number,
+		audioIndex,
+	)
+
 	go m.runRevision(ctx, session, revision, settings)
 
 	return PlaybackSessionState{
@@ -236,15 +255,33 @@ func (m *PlaybackSessionManager) runRevision(ctx context.Context, session *playb
 			return
 		}
 
+		log.Printf(
+			"playback revision ffmpeg start session=%s media=%d revision=%d mode=%s attempt=%d/%d",
+			session.id,
+			session.media.ID,
+			revision.number,
+			plan.Mode,
+			index+1,
+			len(plans),
+		)
+
 		if err := os.RemoveAll(revision.dir); err == nil {
 			_ = os.MkdirAll(revision.dir, 0o755)
 		}
 
-		cmd := exec.CommandContext(ctx, "ffmpeg", plan.Args...)
+		cmd := ffmpegCommandContext(ctx, "ffmpeg", plan.Args...)
 		var stderrBuf bytes.Buffer
-		cmd.Stderr = &stderrBuf
+		cmd.Stderr = io.MultiWriter(&stderrBuf, os.Stderr)
 		if err := cmd.Start(); err != nil {
 			finalState.Error = err.Error()
+			log.Printf(
+				"playback revision ffmpeg start failed session=%s media=%d revision=%d mode=%s error=%q",
+				session.id,
+				session.media.ID,
+				revision.number,
+				plan.Mode,
+				finalState.Error,
+			)
 			continue
 		}
 
@@ -268,12 +305,29 @@ func (m *PlaybackSessionManager) runRevision(ctx context.Context, session *playb
 						return
 					}
 					finalState.Error = compactFFmpegError(stderrBuf.String(), err)
+					log.Printf(
+						"playback revision ffmpeg failed session=%s media=%d revision=%d mode=%s ready=%t error=%q",
+						session.id,
+						session.media.ID,
+						revision.number,
+						plan.Mode,
+						ready,
+						finalState.Error,
+					)
 					break loop
 				}
 				if !ready && revisionReady(revision.dir) {
 					ready = true
 					m.markRevisionReady(session, revision)
 				}
+				log.Printf(
+					"playback revision ffmpeg exited session=%s media=%d revision=%d mode=%s ready=%t",
+					session.id,
+					session.media.ID,
+					revision.number,
+					plan.Mode,
+					ready,
+				)
 				return
 			case <-ticker.C:
 				if !ready && revisionReady(revision.dir) {
@@ -283,7 +337,15 @@ func (m *PlaybackSessionManager) runRevision(ctx context.Context, session *playb
 			}
 		}
 
-		if plan.Mode == "hardware" && settings.AllowSoftwareFallback && index+1 < len(plans) {
+		if plan.Mode == "hardware" && settings.AllowSoftwareFallback && index+1 < len(plans) && !ready {
+			log.Printf(
+				"playback revision fallback session=%s media=%d revision=%d from=%s to=%s",
+				session.id,
+				session.media.ID,
+				revision.number,
+				plan.Mode,
+				plans[index+1].Mode,
+			)
 			continue
 		}
 		break
@@ -294,6 +356,13 @@ func (m *PlaybackSessionManager) runRevision(ctx context.Context, session *playb
 	}
 	revision.status = "error"
 	revision.err = finalState.Error
+	log.Printf(
+		"playback revision error session=%s media=%d revision=%d error=%q",
+		session.id,
+		session.media.ID,
+		revision.number,
+		finalState.Error,
+	)
 	m.broadcast(finalState)
 }
 
@@ -331,7 +400,18 @@ func (m *PlaybackSessionManager) markRevisionReady(session *playbackSession, rev
 		previous := session.revisions[previousActive]
 		session.mu.Unlock()
 		if previous != nil && previous.cancel != nil {
-			previous.cancel()
+			delay := previousRevisionCancelDelay
+			log.Printf(
+				"playback revision ready session=%s media=%d revision=%d previous_revision=%d cancel_delay=%s",
+				sessionID,
+				mediaID,
+				revision.number,
+				previousActive,
+				delay,
+			)
+			time.AfterFunc(delay, func() {
+				previous.cancel()
+			})
 		}
 	}
 }
@@ -369,6 +449,49 @@ func revisionReady(dir string) bool {
 		return false
 	}
 	return len(matches) > 0
+}
+
+func waitForPlaybackFile(ctx context.Context, target string) error {
+	_, err := os.Stat(target)
+	if err == nil {
+		return nil
+	}
+	if !os.IsNotExist(err) || !isPlaybackArtifact(target) {
+		return err
+	}
+
+	deadline := time.NewTimer(1500 * time.Millisecond)
+	defer deadline.Stop()
+	ticker := time.NewTicker(50 * time.Millisecond)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			if _, statErr := os.Stat(target); statErr == nil {
+				return nil
+			}
+			return ctx.Err()
+		case <-deadline.C:
+			_, statErr := os.Stat(target)
+			return statErr
+		case <-ticker.C:
+			if _, statErr := os.Stat(target); statErr == nil {
+				return nil
+			} else if !os.IsNotExist(statErr) {
+				return statErr
+			}
+		}
+	}
+}
+
+func isPlaybackArtifact(target string) bool {
+	switch filepath.Ext(target) {
+	case ".m3u8", ".ts":
+		return true
+	default:
+		return false
+	}
 }
 
 func compactFFmpegError(stderr string, err error) string {

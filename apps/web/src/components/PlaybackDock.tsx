@@ -62,6 +62,10 @@ type SubtitleTrackOption = TrackMenuOption & {
   srcLang: string;
 };
 
+type LoadedSubtitleTrack = SubtitleTrackOption & {
+  body: string;
+};
+
 type AudioTrackOption = TrackMenuOption & {
   streamIndex: number;
   language: string;
@@ -74,6 +78,13 @@ type BrowserAudioTrack = {
 type BrowserAudioTrackList = {
   length: number;
   [index: number]: BrowserAudioTrack | undefined;
+};
+
+type HlsErrorData = {
+  fatal: boolean;
+  type?: string;
+  details?: string;
+  error?: Error;
 };
 
 function getBrowserAudioTracks(element: HTMLVideoElement | null): BrowserAudioTrackList | null {
@@ -112,6 +123,151 @@ function formatClock(totalSeconds: number): string {
   return `${minutes}:${String(seconds).padStart(2, "0")}`;
 }
 
+function formatHlsErrorMessage(data: HlsErrorData): string {
+  return data.details || data.type || data.error?.message || "Playback stream failed";
+}
+
+function resolvedVideoDuration(itemDuration: number, elementDuration: number): number {
+  if (Number.isFinite(itemDuration) && itemDuration > 0) {
+    return itemDuration;
+  }
+  return Number.isFinite(elementDuration) && elementDuration > 0 ? elementDuration : 0;
+}
+
+function nudgeVideoIntoBufferedRange(video: HTMLVideoElement | null): boolean {
+  if (!video || video.buffered.length === 0) {
+    return false;
+  }
+
+  const currentTime = Number.isFinite(video.currentTime) ? video.currentTime : 0;
+  for (let index = 0; index < video.buffered.length; index += 1) {
+    const start = video.buffered.start(index);
+    const end = video.buffered.end(index);
+    if (currentTime + 0.05 < start) {
+      video.currentTime = start + 0.01;
+      return true;
+    }
+    if (currentTime >= start && currentTime <= end) {
+      return false;
+    }
+  }
+
+  const lastIndex = video.buffered.length - 1;
+  if (lastIndex >= 0) {
+    const start = video.buffered.start(lastIndex);
+    if (currentTime < start) {
+      video.currentTime = start + 0.01;
+      return true;
+    }
+  }
+
+  return false;
+}
+
+function bufferedRangeStartsNearZero(video: HTMLVideoElement | null): boolean {
+  if (!video || video.buffered.length === 0) {
+    return false;
+  }
+  return video.buffered.start(0) <= 0.05;
+}
+
+function parseVttTimestamp(value: string): number | null {
+  const match = value.trim().match(/^(?:(\d+):)?(\d{2}):(\d{2})\.(\d{3})$/);
+  if (!match) {
+    return null;
+  }
+
+  const hours = Number(match[1] ?? 0);
+  const minutes = Number(match[2]);
+  const seconds = Number(match[3]);
+  const milliseconds = Number(match[4]);
+  return hours * 3600 + minutes * 60 + seconds + milliseconds / 1000;
+}
+
+function parseVttCueBlocks(body: string): Array<{
+  startTime: number;
+  endTime: number;
+  text: string;
+  settings: string[];
+}> {
+  const normalized = body.replace(/^\uFEFF/, "").replace(/\r\n?/g, "\n");
+  const lines = normalized.split("\n");
+  const cues: Array<{
+    startTime: number;
+    endTime: number;
+    text: string;
+    settings: string[];
+  }> = [];
+
+  let index = 0;
+  if (lines[0]?.startsWith("WEBVTT")) {
+    index += 1;
+    while (index < lines.length && lines[index]?.trim() !== "") {
+      index += 1;
+    }
+  }
+
+  while (index < lines.length) {
+    while (index < lines.length && lines[index]?.trim() === "") {
+      index += 1;
+    }
+    if (index >= lines.length) {
+      break;
+    }
+
+    const blockStart = lines[index]?.trim() ?? "";
+    if (
+      blockStart.startsWith("NOTE") ||
+      blockStart.startsWith("STYLE") ||
+      blockStart.startsWith("REGION")
+    ) {
+      while (index < lines.length && lines[index]?.trim() !== "") {
+        index += 1;
+      }
+      continue;
+    }
+
+    let timingLine = blockStart;
+    if (!timingLine.includes("-->")) {
+      index += 1;
+      timingLine = lines[index]?.trim() ?? "";
+    }
+    if (!timingLine.includes("-->")) {
+      while (index < lines.length && lines[index]?.trim() !== "") {
+        index += 1;
+      }
+      continue;
+    }
+
+    const [startToken, endTokenWithSettings] = timingLine.split("-->");
+    const timingParts = endTokenWithSettings.trim().split(/\s+/);
+    const startTime = parseVttTimestamp(startToken);
+    const endTime = parseVttTimestamp(timingParts[0] ?? "");
+    if (startTime == null || endTime == null) {
+      while (index < lines.length && lines[index]?.trim() !== "") {
+        index += 1;
+      }
+      continue;
+    }
+
+    index += 1;
+    const textLines: string[] = [];
+    while (index < lines.length && lines[index]?.trim() !== "") {
+      textLines.push(lines[index] ?? "");
+      index += 1;
+    }
+
+    cues.push({
+      startTime,
+      endTime: Math.max(endTime, startTime + 0.001),
+      text: textLines.join("\n"),
+      settings: timingParts.slice(1),
+    });
+  }
+
+  return cues;
+}
+
 function getPreferredSubtitleKey(
   subtitleTracks: SubtitleTrackOption[],
   preferredLanguage: string,
@@ -144,21 +300,80 @@ function applyCueLineSetting(cue: TextTrackCue, position: SubtitleAppearance["po
   cueWithLine.line = position === "top" ? 8 : "auto";
 }
 
-function applySubtitleCuePosition(
-  element: HTMLVideoElement | null,
-  position: SubtitleAppearance["position"],
-) {
-  if (!element) return;
-  for (let trackIndex = 0; trackIndex < element.textTracks.length; trackIndex += 1) {
-    const track = element.textTracks[trackIndex];
-    const cues = track?.cues;
-    if (!track || !cues) continue;
-    for (let cueIndex = 0; cueIndex < cues.length; cueIndex += 1) {
-      const cue = cues[cueIndex];
-      if (!cue) continue;
-      applyCueLineSetting(cue, position);
+function applyVttCueSettings(cue: TextTrackCue, settings: string[]) {
+  const vttCue = cue as TextTrackCue & {
+    align?: "start" | "center" | "end" | "left" | "right";
+    line?: number | string;
+    position?: number | string;
+    size?: number;
+    vertical?: string;
+  };
+
+  for (const setting of settings) {
+    const [key, value] = setting.split(":", 2);
+    if (!key || !value) continue;
+    switch (key) {
+      case "align":
+        if (["start", "center", "end", "left", "right"].includes(value)) {
+          vttCue.align = value as "start" | "center" | "end" | "left" | "right";
+        }
+        break;
+      case "line":
+        vttCue.line = value === "auto" ? "auto" : Number(value.replace("%", ""));
+        break;
+      case "position":
+        vttCue.position = Number(value.replace("%", ""));
+        break;
+      case "size":
+        vttCue.size = Number(value.replace("%", ""));
+        break;
+      case "vertical":
+        vttCue.vertical = value;
+        break;
     }
   }
+}
+
+function clearTextTrackCues(track: TextTrack | null) {
+  const cues = track?.cues;
+  if (!track || !cues) return;
+  while (cues.length > 0) {
+    const cue = cues[0];
+    if (!cue) break;
+    track.removeCue(cue);
+  }
+}
+
+function buildSubtitleCues(body: string): TextTrackCue[] {
+  const CueConstructor =
+    typeof window !== "undefined" ? (window.VTTCue ?? window.TextTrackCue) : undefined;
+  if (!CueConstructor) {
+    return [];
+  }
+
+  return parseVttCueBlocks(body)
+    .map((cueBlock) => {
+      const cue = new CueConstructor(
+        cueBlock.startTime,
+        cueBlock.endTime,
+        cueBlock.text,
+      ) as TextTrackCue;
+      applyVttCueSettings(cue, cueBlock.settings);
+      return cue;
+    })
+    .filter(Boolean);
+}
+
+function hasTextTrack(video: HTMLVideoElement, track: TextTrack | null): boolean {
+  if (!track) {
+    return false;
+  }
+  for (let index = 0; index < video.textTracks.length; index += 1) {
+    if (video.textTracks[index] === track) {
+      return true;
+    }
+  }
+  return false;
 }
 
 function getSeasonEpisodeLabel(item: MediaItem): string | null {
@@ -337,9 +552,13 @@ export function PlaybackDock() {
     readStoredSubtitleAppearance(),
   );
   const [selectedSubtitleKey, setSelectedSubtitleKey] = useState("off");
+  const [loadedSubtitleTracks, setLoadedSubtitleTracks] = useState<LoadedSubtitleTrack[] | null>(
+    null,
+  );
   const [selectedAudioKey, setSelectedAudioKey] = useState("");
-  const [subtitleTrackVersion, setSubtitleTrackVersion] = useState(0);
   const [audioTrackVersion, setAudioTrackVersion] = useState(0);
+  const [subtitleAttachmentVersion, setSubtitleAttachmentVersion] = useState(0);
+  const [subtitleReadyVersion, setSubtitleReadyVersion] = useState(0);
   const [subtitleMenuOpen, setSubtitleMenuOpen] = useState(false);
   const [audioMenuOpen, setAudioMenuOpen] = useState(false);
   const [playerSettingsOpen, setPlayerSettingsOpen] = useState(false);
@@ -353,12 +572,19 @@ export function PlaybackDock() {
   const playerSettingsBtnRef = useRef<HTMLButtonElement | null>(null);
   const hlsRef = useRef<Hls | null>(null);
   const requestedAudioTrackRef = useRef<{ mediaId: number; key: string } | null>(null);
+  const dispatchedAudioTrackRef = useRef<{ mediaId: number; key: string } | null>(null);
   const [controlsVisible, setControlsVisible] = useState(true);
   const hideTimerRef = useRef<ReturnType<typeof setTimeout>>(0);
   const overlayRef = useRef<HTMLDivElement | null>(null);
   const seekToAfterReloadRef = useRef<number | null>(null);
   const resumePlaybackAfterReloadRef = useRef(false);
   const previousVideoSourceUrlRef = useRef("");
+  const [hlsStatusMessage, setHlsStatusMessage] = useState("");
+  const mediaRecoveryAttemptsRef = useRef(0);
+  const networkRecoveryAttemptsRef = useRef(0);
+  const initialBufferGapHandledRef = useRef(false);
+  const manualSubtitleTrackRef = useRef<TextTrack | null>(null);
+  const manualSubtitleVideoRef = useRef<HTMLVideoElement | null>(null);
   const {
     activeItem,
     activeMode,
@@ -393,6 +619,10 @@ export function PlaybackDock() {
   const isFullscreen = isVideo && viewMode === "fullscreen";
   const activeItemId = activeItem?.id ?? null;
   const activeItemDuration = activeItem?.duration ?? 0;
+  const videoStatusMessage =
+    hlsStatusMessage ||
+    lastEvent ||
+    (wsConnected ? "Waiting for transcode updates" : "WebSocket disconnected");
   const activeLibrary = useMemo(
     () => libraries.find((library) => library.id === activeItem?.library_id) ?? null,
     [activeItem?.library_id, libraries],
@@ -408,7 +638,15 @@ export function PlaybackDock() {
   useEffect(() => {
     const previousUrl = previousVideoSourceUrlRef.current;
     previousVideoSourceUrlRef.current = videoSourceUrl;
-    if (!videoSourceUrl || !previousUrl || previousUrl === videoSourceUrl) return;
+    const sourceChanged = previousUrl !== videoSourceUrl;
+    if (sourceChanged) {
+      setHlsStatusMessage("");
+      mediaRecoveryAttemptsRef.current = 0;
+      networkRecoveryAttemptsRef.current = 0;
+      initialBufferGapHandledRef.current = false;
+      setSubtitleReadyVersion(0);
+    }
+    if (!videoSourceUrl || !previousUrl || !sourceChanged) return;
     const video = videoRef.current;
     if (!video) return;
     seekToAfterReloadRef.current =
@@ -420,7 +658,7 @@ export function PlaybackDock() {
     video.load();
   }, [playbackState.currentTime, videoSourceUrl]);
 
-  const subtitleTracks = useMemo<SubtitleTrackOption[]>(() => {
+  const subtitleTrackRequests = useMemo<SubtitleTrackOption[]>(() => {
     if (!isVideo || !activeItem) return [];
     const external =
       activeItem.subtitles?.map((subtitle, index) => ({
@@ -439,10 +677,52 @@ export function PlaybackDock() {
     return [...external, ...embedded];
   }, [activeItem, isVideo]);
 
-  const selectedSubtitleIndex = useMemo(
-    () => subtitleTracks.findIndex((track) => track.key === selectedSubtitleKey),
-    [selectedSubtitleKey, subtitleTracks],
-  );
+  useEffect(() => {
+    if (subtitleTrackRequests.length === 0) {
+      setLoadedSubtitleTracks([]);
+      return;
+    }
+
+    const controller = new AbortController();
+    let active = true;
+    setLoadedSubtitleTracks(null);
+
+    void Promise.all(
+      subtitleTrackRequests.map(async (track) => {
+        try {
+          const response = await fetch(track.src, {
+            credentials: "include",
+            signal: controller.signal,
+          });
+          if (!response.ok) {
+            throw new Error(`Subtitle request failed: ${response.status}`);
+          }
+          return { ...track, body: await response.text() };
+        } catch (error) {
+          console.error("[PlaybackDock] Subtitle load failed", {
+            mediaId: activeItem?.id ?? null,
+            source: track.src,
+            error,
+          });
+          return null;
+        }
+      }),
+    ).then((tracks) => {
+      if (!active) {
+        return;
+      }
+      setLoadedSubtitleTracks(
+        tracks.filter((track): track is LoadedSubtitleTrack => track != null),
+      );
+    });
+
+    return () => {
+      active = false;
+      controller.abort();
+    };
+  }, [activeItem?.id, subtitleTrackRequests]);
+
+  const subtitleTrackOptions = subtitleTrackRequests;
 
   const audioTracks = useMemo<AudioTrackOption[]>(() => {
     if (!isVideo || !activeItem) return [];
@@ -479,27 +759,51 @@ export function PlaybackDock() {
         setPlaybackState({ currentTime: 0, duration: 0, isPlaying: false });
         return;
       }
+      const elementDuration =
+        Number.isFinite(element.duration) && element.duration > 0 ? element.duration : 0;
       setPlaybackState({
         currentTime: Number.isFinite(element.currentTime) ? element.currentTime : 0,
-        duration:
-          Number.isFinite(element.duration) && element.duration > 0
-            ? element.duration
-            : (activeItem?.duration ?? 0),
+        duration: isVideo
+          ? resolvedVideoDuration(activeItem?.duration ?? 0, elementDuration)
+          : elementDuration,
         isPlaying: !element.paused && !element.ended,
       });
     },
-    [activeItem?.duration],
+    [activeItem?.duration, isVideo],
   );
+
+  const markSubtitleReady = useCallback(() => {
+    setSubtitleReadyVersion((value) => value + 1);
+  }, []);
+
+  const maybeRecoverInitialBufferGap = useCallback((video: HTMLVideoElement | null): boolean => {
+    if (!video || initialBufferGapHandledRef.current) {
+      return false;
+    }
+
+    if ((Number.isFinite(video.currentTime) ? video.currentTime : 0) > 1) {
+      initialBufferGapHandledRef.current = true;
+      return false;
+    }
+
+    if (bufferedRangeStartsNearZero(video)) {
+      initialBufferGapHandledRef.current = true;
+      return false;
+    }
+
+    const nudged = nudgeVideoIntoBufferedRange(video);
+    if (nudged || video.buffered.length > 0) {
+      initialBufferGapHandledRef.current = true;
+    }
+    return nudged;
+  }, []);
 
   const persistPlaybackProgress = useCallback(
     async (options?: { force?: boolean; completed?: boolean }) => {
       if (!isVideo || !activeItem) return;
       const video = videoRef.current;
       if (!video) return;
-      const duration =
-        Number.isFinite(video.duration) && video.duration > 0
-          ? video.duration
-          : activeItem.duration;
+      const duration = resolvedVideoDuration(activeItem.duration, video.duration);
       if (!Number.isFinite(duration) || duration <= 0) return;
       const positionSeconds = Math.max(
         0,
@@ -551,8 +855,7 @@ export function PlaybackDock() {
         resumeAppliedRef.current = activeItem.id;
         return;
       }
-      const maxResumeTime =
-        Number.isFinite(element.duration) && element.duration > 0 ? element.duration - 1 : resumeAt;
+      const maxResumeTime = resolvedVideoDuration(activeItem.duration, element.duration) - 1;
       element.currentTime = Math.max(0, Math.min(resumeAt, maxResumeTime));
       resumeAppliedRef.current = activeItem.id;
     },
@@ -564,6 +867,11 @@ export function PlaybackDock() {
       if (element == null && hlsRef.current != null) {
         hlsRef.current.destroy();
         hlsRef.current = null;
+      }
+      if (videoRef.current !== element) {
+        manualSubtitleTrackRef.current = null;
+        manualSubtitleVideoRef.current = null;
+        setSubtitleAttachmentVersion((value) => value + 1);
       }
       videoRef.current = element;
       registerMediaElement("video", element);
@@ -599,8 +907,9 @@ export function PlaybackDock() {
       }
       syncPlaybackState(element);
       setAudioTrackVersion((value) => value + 1);
+      markSubtitleReady();
     },
-    [applyResumePosition, syncPlaybackState],
+    [applyResumePosition, markSubtitleReady, syncPlaybackState],
   );
 
   useEffect(() => {
@@ -610,16 +919,23 @@ export function PlaybackDock() {
       isPlaying: false,
     });
     setSelectedSubtitleKey("off");
+    setLoadedSubtitleTracks(null);
     setSelectedAudioKey("");
-    setSubtitleTrackVersion(0);
     setAudioTrackVersion(0);
+    setSubtitleAttachmentVersion(0);
+    setSubtitleReadyVersion(0);
     resumeAppliedRef.current = null;
     defaultTrackSelectionAppliedRef.current = null;
     requestedAudioTrackRef.current =
       activeItemId != null ? { mediaId: activeItemId, key: "" } : null;
+    dispatchedAudioTrackRef.current = null;
     seekToAfterReloadRef.current = null;
     resumePlaybackAfterReloadRef.current = false;
     previousVideoSourceUrlRef.current = "";
+    setHlsStatusMessage("");
+    mediaRecoveryAttemptsRef.current = 0;
+    networkRecoveryAttemptsRef.current = 0;
+    initialBufferGapHandledRef.current = false;
     setSubtitleMenuOpen(false);
     setAudioMenuOpen(false);
     setPlayerSettingsOpen(false);
@@ -628,16 +944,16 @@ export function PlaybackDock() {
   useEffect(() => {
     if (!activeItem) {
       requestedAudioTrackRef.current = null;
+      dispatchedAudioTrackRef.current = null;
       return;
     }
     if (requestedAudioTrackRef.current?.mediaId !== activeItem.id) {
-      requestedAudioTrackRef.current = { mediaId: activeItem.id, key: audioTracks[0]?.key ?? "" };
-      return;
+      requestedAudioTrackRef.current = null;
     }
-    if (!requestedAudioTrackRef.current.key && audioTracks[0]?.key) {
-      requestedAudioTrackRef.current = { mediaId: activeItem.id, key: audioTracks[0].key };
+    if (dispatchedAudioTrackRef.current?.mediaId !== activeItem.id) {
+      dispatchedAudioTrackRef.current = null;
     }
-  }, [activeItem, audioTracks]);
+  }, [activeItem]);
 
   useEffect(() => {
     if (!isVideo || !activeItem) return;
@@ -657,7 +973,7 @@ export function PlaybackDock() {
     if (activeItem.library_id != null && !librariesFetched) return;
     setSelectedSubtitleKey(
       getPreferredSubtitleKey(
-        subtitleTracks,
+        subtitleTrackOptions,
         libraryPlaybackPreferences.preferredSubtitleLanguage,
         libraryPlaybackPreferences.subtitlesEnabledByDefault,
       ),
@@ -674,7 +990,7 @@ export function PlaybackDock() {
     libraryPlaybackPreferences.preferredAudioLanguage,
     libraryPlaybackPreferences.preferredSubtitleLanguage,
     libraryPlaybackPreferences.subtitlesEnabledByDefault,
-    subtitleTracks,
+    subtitleTrackOptions,
   ]);
 
   useEffect(
@@ -700,25 +1016,64 @@ export function PlaybackDock() {
     };
   }, [activeItem, isVideo, persistPlaybackProgress]);
 
-  /* ── Subtitle track activation ── */
-  const activateSubtitleTrack = useCallback(() => {
+  const applyManagedSubtitleTrack = useCallback(() => {
     const video = videoRef.current;
     if (!video) return;
-    for (let i = 0; i < video.textTracks.length; i += 1) {
-      const tt = video.textTracks[i];
-      if (!tt) continue;
-      tt.mode = i === selectedSubtitleIndex ? "showing" : "disabled";
+    const hasLoadedSubtitles = (loadedSubtitleTracks?.length ?? 0) > 0;
+    const hasSelectedSubtitle = selectedSubtitleKey !== "off";
+
+    if (!hasSelectedSubtitle && !hasLoadedSubtitles) {
+      return;
     }
-    applySubtitleCuePosition(video, subtitleAppearance.position);
-  }, [selectedSubtitleIndex, subtitleAppearance.position]);
+
+    let track = manualSubtitleTrackRef.current;
+    if (
+      manualSubtitleVideoRef.current !== video ||
+      track == null ||
+      !hasTextTrack(video, track)
+    ) {
+      try {
+        track = video.addTextTrack("subtitles", "Plum subtitles", "und");
+      } catch {
+        return;
+      }
+      if (!track) {
+        return;
+      }
+      manualSubtitleTrackRef.current = track;
+      manualSubtitleVideoRef.current = video;
+    }
+
+    clearTextTrackCues(track);
+
+    if (selectedSubtitleKey === "off") {
+      track.mode = "disabled";
+      return;
+    }
+
+    const selectedTrack =
+      loadedSubtitleTracks?.find((candidate) => candidate.key === selectedSubtitleKey) ?? null;
+    if (!selectedTrack) {
+      track.mode = "disabled";
+      return;
+    }
+
+    for (const cue of buildSubtitleCues(selectedTrack.body)) {
+      applyCueLineSetting(cue, subtitleAppearance.position);
+      track.addCue(cue);
+    }
+    track.mode = "showing";
+  }, [loadedSubtitleTracks, selectedSubtitleKey, subtitleAppearance.position]);
 
   useEffect(() => {
-    activateSubtitleTrack();
-  }, [activateSubtitleTrack, subtitleTrackVersion]);
-
-  useEffect(() => {
-    applySubtitleCuePosition(videoRef.current, subtitleAppearance.position);
-  }, [subtitleAppearance.position, subtitleTrackVersion]);
+    applyManagedSubtitleTrack();
+    return () => {
+      clearTextTrackCues(manualSubtitleTrackRef.current);
+      if (manualSubtitleTrackRef.current) {
+        manualSubtitleTrackRef.current.mode = "disabled";
+      }
+    };
+  }, [applyManagedSubtitleTrack, subtitleAttachmentVersion, subtitleReadyVersion]);
 
   const syncBrowserAudioTrackSelection = useCallback(() => {
     const browserAudioTracks = getBrowserAudioTracks(videoRef.current);
@@ -749,9 +1104,9 @@ export function PlaybackDock() {
       if (!isVideo || !activeItem || !key) return;
       const track = audioTracks.find((candidate) => candidate.key === key);
       if (!track) return;
-      const previousRequest = requestedAudioTrackRef.current;
+      const previousRequest = dispatchedAudioTrackRef.current;
       if (previousRequest?.mediaId === activeItem.id && previousRequest.key === key) return;
-      requestedAudioTrackRef.current = { mediaId: activeItem.id, key };
+      dispatchedAudioTrackRef.current = { mediaId: activeItem.id, key };
       void changeAudioTrack(track.streamIndex);
     },
     [activeItem, audioTracks, changeAudioTrack, isVideo],
@@ -765,8 +1120,20 @@ export function PlaybackDock() {
     if (!selectedAudioKey) return;
     if (!videoSourceUrl) return;
     syncBrowserAudioTrackSelection();
+    if (
+      requestedAudioTrackRef.current?.mediaId !== activeItem?.id ||
+      requestedAudioTrackRef.current?.key !== selectedAudioKey
+    ) {
+      return;
+    }
     requestAudioTrackChange(selectedAudioKey);
-  }, [requestAudioTrackChange, selectedAudioKey, syncBrowserAudioTrackSelection, videoSourceUrl]);
+  }, [
+    activeItem?.id,
+    requestAudioTrackChange,
+    selectedAudioKey,
+    syncBrowserAudioTrackSelection,
+    videoSourceUrl,
+  ]);
 
   useEffect(() => {
     const video = videoRef.current;
@@ -783,13 +1150,6 @@ export function PlaybackDock() {
       return;
     }
 
-    if (video.canPlayType("application/vnd.apple.mpegurl")) {
-      if (video.src !== videoSourceUrl) {
-        video.src = videoSourceUrl;
-      }
-      return;
-    }
-
     if (!Hls.isSupported()) {
       video.src = videoSourceUrl;
       return;
@@ -798,8 +1158,63 @@ export function PlaybackDock() {
     const hls = new Hls({
       enableWorker: true,
       backBufferLength: 90,
+      xhrSetup: (xhr) => {
+        xhr.withCredentials = true;
+      },
     });
     hlsRef.current = hls;
+    hls.on(Hls.Events.MANIFEST_PARSED, () => {
+      setHlsStatusMessage("");
+      mediaRecoveryAttemptsRef.current = 0;
+      networkRecoveryAttemptsRef.current = 0;
+      markSubtitleReady();
+    });
+    hls.on(Hls.Events.ERROR, (_event, data: HlsErrorData) => {
+      const formattedError = formatHlsErrorMessage(data);
+      const isRecoverableGapError =
+        !data.fatal &&
+        (data.details === "bufferStalledError" || data.details === "bufferSeekOverHole");
+      if (!isRecoverableGapError) {
+        console.error("[PlaybackDock] HLS error", {
+          mediaId: activeItemId,
+          source: videoSourceUrl,
+          fatal: data.fatal,
+          type: data.type,
+          details: data.details,
+          error: data.error,
+        });
+      }
+
+      if (!data.fatal) {
+        if (data.details === "bufferStalledError") {
+          const video = videoRef.current;
+          if (maybeRecoverInitialBufferGap(video)) {
+            setHlsStatusMessage("Resyncing playback...");
+            void video?.play().catch(() => {});
+          }
+        }
+        return;
+      }
+
+      if (
+        data.type === Hls.ErrorTypes.NETWORK_ERROR &&
+        networkRecoveryAttemptsRef.current < 2
+      ) {
+        networkRecoveryAttemptsRef.current += 1;
+        setHlsStatusMessage("Reconnecting stream...");
+        hls.startLoad();
+        return;
+      }
+
+      if (data.type === Hls.ErrorTypes.MEDIA_ERROR && mediaRecoveryAttemptsRef.current < 2) {
+        mediaRecoveryAttemptsRef.current += 1;
+        setHlsStatusMessage("Recovering playback...");
+        hls.recoverMediaError();
+        return;
+      }
+
+      setHlsStatusMessage(`Stream error: ${formattedError}`);
+    });
     hls.loadSource(videoSourceUrl);
     hls.attachMedia(video);
 
@@ -809,7 +1224,7 @@ export function PlaybackDock() {
         hlsRef.current = null;
       }
     };
-  }, [isVideo, videoSourceUrl]);
+  }, [activeItemId, isVideo, markSubtitleReady, maybeRecoverInitialBufferGap, videoSourceUrl]);
 
   /* ── Close track menus on outside click ── */
   useEffect(() => {
@@ -1012,28 +1427,36 @@ export function PlaybackDock() {
           autoPlay
           playsInline
           onLoadedMetadata={(event) => handleVideoLoadedMetadata(event.currentTarget)}
-          onTimeUpdate={(event) => syncPlaybackState(event.currentTarget)}
-          onPlay={(event) => syncPlaybackState(event.currentTarget)}
+          onCanPlay={(event) => {
+            maybeRecoverInitialBufferGap(event.currentTarget);
+            syncPlaybackState(event.currentTarget);
+            markSubtitleReady();
+          }}
+          onTimeUpdate={(event) => {
+            if (event.currentTarget.currentTime > 1) {
+              initialBufferGapHandledRef.current = true;
+            }
+            syncPlaybackState(event.currentTarget);
+          }}
+          onPlay={(event) => {
+            if (event.currentTarget.currentTime > 1) {
+              initialBufferGapHandledRef.current = true;
+            }
+            setHlsStatusMessage("");
+            syncPlaybackState(event.currentTarget);
+          }}
           onPause={(event) => {
             syncPlaybackState(event.currentTarget);
             void persistPlaybackProgress({ force: true });
           }}
           onVolumeChange={(event) => syncPlaybackState(event.currentTarget)}
+          onError={() => {
+            setHlsStatusMessage("Stream error: browser media element failed to load playback");
+          }}
           onEnded={() => {
             void persistPlaybackProgress({ force: true, completed: true });
           }}
         >
-          {subtitleTracks.map((track) => (
-            <track
-              key={track.key}
-              kind="subtitles"
-              src={track.src}
-              label={track.label}
-              srcLang={track.srcLang}
-              onLoad={() => setSubtitleTrackVersion((value) => value + 1)}
-              onError={() => setSubtitleTrackVersion((value) => value + 1)}
-            />
-          ))}
         </video>
 
         {/* Top title bar */}
@@ -1041,10 +1464,10 @@ export function PlaybackDock() {
           <div className="fullscreen-player__title-area">
             <h2 className="fullscreen-player__title">{titleDisplay}</h2>
             <div className="fullscreen-player__status">
-              {wsConnected && lastEvent && (
+              {videoStatusMessage && (
                 <>
                   <span className="status-dot" data-connected={wsConnected} />
-                  <span>{lastEvent}</span>
+                  <span>{videoStatusMessage}</span>
                 </>
               )}
             </div>
@@ -1105,7 +1528,7 @@ export function PlaybackDock() {
 
             {/* Right: subtitles + settings + volume + fullscreen + exit */}
             <div className="fullscreen-player__controls-right">
-              {subtitleTracks.length > 0 && (
+              {subtitleTrackOptions.length > 0 && (
                 <div className="fullscreen-player__subtitle-wrap">
                   <button
                     ref={subtitleBtnRef}
@@ -1124,7 +1547,7 @@ export function PlaybackDock() {
                   {subtitleMenuOpen && (
                     <TrackMenu
                       menuRef={subtitleMenuRef}
-                      options={subtitleTracks}
+                      options={subtitleTrackOptions}
                       selectedKey={selectedSubtitleKey}
                       ariaLabel="Select subtitle track"
                       offLabel="Off"
@@ -1160,6 +1583,8 @@ export function PlaybackDock() {
                       selectedKey={selectedAudioKey}
                       ariaLabel="Select audio track"
                       onSelect={(key) => {
+                        requestedAudioTrackRef.current =
+                          activeItem != null ? { mediaId: activeItem.id, key } : null;
                         setSelectedAudioKey(key);
                         setAudioMenuOpen(false);
                       }}
@@ -1273,10 +1698,7 @@ export function PlaybackDock() {
             {isVideo && (
               <>
                 <span className="status-dot" data-connected={wsConnected} />
-                <span className="playback-dock__status-copy">
-                  {lastEvent ||
-                    (wsConnected ? "Waiting for transcode updates" : "WebSocket disconnected")}
-                </span>
+                <span className="playback-dock__status-copy">{videoStatusMessage}</span>
               </>
             )}
           </div>
@@ -1335,7 +1757,7 @@ export function PlaybackDock() {
               {isVideo && activeItem.overview && (
                 <p className="playback-dock__overview">{activeItem.overview}</p>
               )}
-              {isVideo && subtitleTracks.length > 0 && (
+              {isVideo && subtitleTrackOptions.length > 0 && (
                 <div className="playback-dock__subtitle-picker">
                   <button
                     ref={subtitleBtnRef}
@@ -1354,7 +1776,7 @@ export function PlaybackDock() {
                   {subtitleMenuOpen && (
                     <TrackMenu
                       menuRef={subtitleMenuRef}
-                      options={subtitleTracks}
+                      options={subtitleTrackOptions}
                       selectedKey={selectedSubtitleKey}
                       position="above"
                       ariaLabel="Select subtitle track"
@@ -1391,6 +1813,8 @@ export function PlaybackDock() {
                       position="above"
                       ariaLabel="Select audio track"
                       onSelect={(key) => {
+                        requestedAudioTrackRef.current =
+                          activeItem != null ? { mediaId: activeItem.id, key } : null;
                         setSelectedAudioKey(key);
                         setAudioMenuOpen(false);
                       }}
@@ -1449,28 +1873,36 @@ export function PlaybackDock() {
                 autoPlay
                 playsInline
                 onLoadedMetadata={(event) => handleVideoLoadedMetadata(event.currentTarget)}
-                onTimeUpdate={(event) => syncPlaybackState(event.currentTarget)}
-                onPlay={(event) => syncPlaybackState(event.currentTarget)}
+                onCanPlay={(event) => {
+                  maybeRecoverInitialBufferGap(event.currentTarget);
+                  syncPlaybackState(event.currentTarget);
+                  markSubtitleReady();
+                }}
+                onTimeUpdate={(event) => {
+                  if (event.currentTarget.currentTime > 1) {
+                    initialBufferGapHandledRef.current = true;
+                  }
+                  syncPlaybackState(event.currentTarget);
+                }}
+                onPlay={(event) => {
+                  if (event.currentTarget.currentTime > 1) {
+                    initialBufferGapHandledRef.current = true;
+                  }
+                  setHlsStatusMessage("");
+                  syncPlaybackState(event.currentTarget);
+                }}
                 onPause={(event) => {
                   syncPlaybackState(event.currentTarget);
                   void persistPlaybackProgress({ force: true });
                 }}
                 onVolumeChange={(event) => syncPlaybackState(event.currentTarget)}
+                onError={() => {
+                  setHlsStatusMessage("Stream error: browser media element failed to load playback");
+                }}
                 onEnded={() => {
                   void persistPlaybackProgress({ force: true, completed: true });
                 }}
               >
-                {subtitleTracks.map((track) => (
-                  <track
-                    key={track.key}
-                    kind="subtitles"
-                    src={track.src}
-                    label={track.label}
-                    srcLang={track.srcLang}
-                    onLoad={() => setSubtitleTrackVersion((value) => value + 1)}
-                    onError={() => setSubtitleTrackVersion((value) => value + 1)}
-                  />
-                ))}
               </video>
               <button
                 type="button"

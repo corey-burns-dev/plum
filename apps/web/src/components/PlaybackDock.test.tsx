@@ -1,25 +1,82 @@
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import * as api from "../api";
 import { PlaybackDock } from "./PlaybackDock";
 
+type MockHlsInstance = {
+  handlers: Map<string, Array<(...args: unknown[]) => void>>;
+  loadSource: ReturnType<typeof vi.fn>;
+  attachMedia: ReturnType<typeof vi.fn>;
+  destroy: ReturnType<typeof vi.fn>;
+  startLoad: ReturnType<typeof vi.fn>;
+  recoverMediaError: ReturnType<typeof vi.fn>;
+  on: (event: string, handler: (...args: unknown[]) => void) => void;
+  emit: (event: string, ...args: unknown[]) => void;
+};
+
+type MockCue = {
+  startTime: number;
+  endTime: number;
+  text: string;
+  line?: number | string;
+};
+
+type MockTextTrack = {
+  mode: TextTrackMode;
+  cues: MockCue[];
+  addCue: (cue: MockCue) => void;
+  removeCue: (cue: MockCue) => void;
+};
+
 const mockUsePlayer = vi.fn();
 const mockChangeAudioTrack = vi.fn();
+const { mockHlsInstances } = vi.hoisted(() => ({
+  mockHlsInstances: [] as MockHlsInstance[],
+}));
 
 vi.mock("../contexts/PlayerContext", () => ({
   usePlayer: () => mockUsePlayer(),
 }));
 
 vi.mock("hls.js", () => ({
-  default: class MockHls {
+  default: class {
+    static Events = {
+      MANIFEST_PARSED: "manifestParsed",
+      ERROR: "error",
+    };
+
+    static ErrorTypes = {
+      NETWORK_ERROR: "networkError",
+      MEDIA_ERROR: "mediaError",
+    };
+
     static isSupported() {
       return true;
     }
 
-    loadSource() {}
-    attachMedia() {}
-    destroy() {}
+    handlers = new Map<string, Array<(...args: unknown[]) => void>>();
+    loadSource = vi.fn();
+    attachMedia = vi.fn();
+    destroy = vi.fn();
+    startLoad = vi.fn();
+    recoverMediaError = vi.fn();
+
+    constructor() {
+      mockHlsInstances.push(this);
+    }
+
+    on(event: string, handler: (...args: unknown[]) => void) {
+      const handlers = this.handlers.get(event) ?? [];
+      handlers.push(handler);
+      this.handlers.set(event, handlers);
+    }
+
+    emit(event: string, ...args: unknown[]) {
+      for (const handler of this.handlers.get(event) ?? []) {
+        handler(...args);
+      }
+    }
   },
 }));
 
@@ -40,8 +97,10 @@ function renderDock() {
 describe("PlaybackDock audio track selection", () => {
   beforeEach(() => {
     vi.restoreAllMocks();
+    vi.spyOn(console, "error").mockImplementation(() => {});
     mockChangeAudioTrack.mockReset();
     mockChangeAudioTrack.mockResolvedValue(undefined);
+    mockHlsInstances.length = 0;
     vi.spyOn(api, "listLibraries").mockResolvedValue([
       {
         id: 7,
@@ -125,22 +184,10 @@ describe("PlaybackDock audio track selection", () => {
   });
 
   it("reloads the active video element when the playback revision URL changes", async () => {
-    const loadSpy = vi.spyOn(HTMLMediaElement.prototype, "load").mockImplementation(() => {});
-    const pauseSpy = vi.spyOn(HTMLMediaElement.prototype, "pause").mockImplementation(() => {});
-    const { container, queryClient, rerender } = renderDock();
-    const video = container.querySelector("video") as HTMLVideoElement | null;
-    expect(video).toBeTruthy();
-    if (!video) {
-      throw new Error("Expected a video element");
-    }
+    const { queryClient, rerender } = renderDock();
 
-    let currentTime = 24;
-    Object.defineProperty(video, "currentTime", {
-      configurable: true,
-      get: () => currentTime,
-      set: (value: number) => {
-        currentTime = value;
-      },
+    await waitFor(() => {
+      expect(mockHlsInstances).toHaveLength(1);
     });
 
     mockUsePlayer.mockReturnValue({
@@ -156,13 +203,88 @@ describe("PlaybackDock audio track selection", () => {
     );
 
     await waitFor(() => {
-      expect(loadSpy).toHaveBeenCalledTimes(1);
-      expect(pauseSpy).toHaveBeenCalled();
+      expect(mockHlsInstances).toHaveLength(2);
+    });
+    expect(mockHlsInstances[1]?.loadSource).toHaveBeenCalledWith(
+      "http://localhost:3000/api/playback/sessions/session-1/revisions/2/index.m3u8",
+    );
+  });
+
+  it("restarts loading on fatal HLS network errors", async () => {
+    renderDock();
+
+    await waitFor(() => {
+      expect(mockHlsInstances).toHaveLength(1);
     });
 
-    currentTime = 0;
-    fireEvent.loadedMetadata(video);
-    expect(currentTime).toBe(24);
+    const hls = mockHlsInstances[0];
+    if (!hls) {
+      throw new Error("Expected an HLS instance");
+    }
+
+    act(() => {
+      hls.emit("error", "error", {
+        fatal: true,
+        type: "networkError",
+        details: "fragLoadError",
+      });
+    });
+
+    expect(hls.startLoad).toHaveBeenCalledTimes(1);
+    await waitFor(() => {
+      expect(screen.getByText("Reconnecting stream...")).toBeTruthy();
+    });
+  });
+
+  it("recovers media playback on fatal HLS media errors", async () => {
+    renderDock();
+
+    await waitFor(() => {
+      expect(mockHlsInstances).toHaveLength(1);
+    });
+
+    const hls = mockHlsInstances[0];
+    if (!hls) {
+      throw new Error("Expected an HLS instance");
+    }
+
+    act(() => {
+      hls.emit("error", "error", {
+        fatal: true,
+        type: "mediaError",
+        details: "bufferStalledError",
+      });
+    });
+
+    expect(hls.recoverMediaError).toHaveBeenCalledTimes(1);
+    await waitFor(() => {
+      expect(screen.getByText("Recovering playback...")).toBeTruthy();
+    });
+  });
+
+  it("shows a stream error when the HLS failure is fatal and unrecoverable", async () => {
+    renderDock();
+
+    await waitFor(() => {
+      expect(mockHlsInstances).toHaveLength(1);
+    });
+
+    const hls = mockHlsInstances[0];
+    if (!hls) {
+      throw new Error("Expected an HLS instance");
+    }
+
+    act(() => {
+      hls.emit("error", "error", {
+        fatal: true,
+        type: "otherFatalError",
+        details: "appendError",
+      });
+    });
+
+    await waitFor(() => {
+      expect(screen.getByText("Stream error: appendError")).toBeTruthy();
+    });
   });
 
   it("prefers the library default audio language when available", async () => {
@@ -196,7 +318,150 @@ describe("PlaybackDock audio track selection", () => {
     await waitFor(() => {
       expect(browserAudioTracks[0]?.enabled).toBe(false);
       expect(browserAudioTracks[1]?.enabled).toBe(true);
-      expect(mockChangeAudioTrack).toHaveBeenCalledWith(2);
     });
+    expect(mockChangeAudioTrack).not.toHaveBeenCalled();
+  });
+
+  it("reapplies the default subtitle track when media becomes ready", async () => {
+    const originalCue = window.VTTCue;
+    const originalAddTextTrack = HTMLMediaElement.prototype.addTextTrack;
+    const originalTextTracksDescriptor = Object.getOwnPropertyDescriptor(
+      HTMLMediaElement.prototype,
+      "textTracks",
+    );
+    const tracksByElement = new WeakMap<HTMLMediaElement, MockTextTrack[]>();
+
+    const createTrack = (): MockTextTrack => {
+      const cues: MockCue[] = [];
+      return {
+        mode: "disabled",
+        cues,
+        addCue: (cue) => {
+          cues.push(cue);
+        },
+        removeCue: (cue) => {
+          const index = cues.indexOf(cue);
+          if (index >= 0) {
+            cues.splice(index, 1);
+          }
+        },
+      };
+    };
+
+    const addTextTrackMock = vi.fn(function (this: HTMLMediaElement) {
+      const track = createTrack();
+      const tracks = tracksByElement.get(this) ?? [];
+      tracks.push(track);
+      tracksByElement.set(this, tracks);
+      return track as unknown as TextTrack;
+    });
+
+    Object.defineProperty(window, "VTTCue", {
+      configurable: true,
+      writable: true,
+      value: class {
+        startTime: number;
+        endTime: number;
+        text: string;
+
+        constructor(startTime: number, endTime: number, text: string) {
+          this.startTime = startTime;
+          this.endTime = endTime;
+          this.text = text;
+        }
+      },
+    });
+    Object.defineProperty(HTMLMediaElement.prototype, "addTextTrack", {
+      configurable: true,
+      value: addTextTrackMock,
+    });
+    Object.defineProperty(HTMLMediaElement.prototype, "textTracks", {
+      configurable: true,
+      get() {
+        return tracksByElement.get(this) ?? [];
+      },
+    });
+
+    const fetchSpy = vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      new Response("WEBVTT\n\n00:00:00.000 --> 00:00:02.000\nHello world\n", { status: 200 }),
+    );
+
+    mockUsePlayer.mockReturnValue({
+      ...mockUsePlayer.mock.results.at(-1)?.value,
+      activeItem: {
+        id: 42,
+        library_id: 7,
+        title: "Track Test",
+        path: "/movies/track-test.mkv",
+        duration: 120,
+        type: "movie",
+        subtitles: [{ id: 9, language: "eng", title: "English", format: "vtt" }],
+        embeddedAudioTracks: [
+          { streamIndex: 1, language: "eng", title: "English" },
+          { streamIndex: 2, language: "jpn", title: "Japanese" },
+        ],
+      },
+    });
+
+    try {
+      const { container } = renderDock();
+      const video = container.querySelector("video") as HTMLVideoElement | null;
+      expect(video).toBeTruthy();
+      if (!video) {
+        throw new Error("Expected a video element");
+      }
+
+      await waitFor(() => {
+        expect(fetchSpy).toHaveBeenCalledTimes(1);
+        expect(addTextTrackMock).toHaveBeenCalledTimes(1);
+      });
+
+      await waitFor(() => {
+        const currentTracks = tracksByElement.get(video) ?? [];
+        expect(currentTracks[0]?.mode).toBe("showing");
+        expect(currentTracks[0]?.cues).toHaveLength(1);
+      });
+
+      tracksByElement.set(video, []);
+      fireEvent.loadedMetadata(video);
+
+      await waitFor(() => {
+        expect(addTextTrackMock).toHaveBeenCalledTimes(2);
+      });
+
+      const recreatedTracks = tracksByElement.get(video) ?? [];
+      expect(recreatedTracks).toHaveLength(1);
+      expect(recreatedTracks[0]?.mode).toBe("showing");
+      expect(recreatedTracks[0]?.cues).toHaveLength(1);
+    } finally {
+      fetchSpy.mockRestore();
+      if (originalCue == null) {
+        delete (window as Window & { VTTCue?: typeof window.VTTCue }).VTTCue;
+      } else {
+        Object.defineProperty(window, "VTTCue", {
+          configurable: true,
+          writable: true,
+          value: originalCue,
+        });
+      }
+      if (originalTextTracksDescriptor) {
+        Object.defineProperty(HTMLMediaElement.prototype, "textTracks", originalTextTracksDescriptor);
+      } else {
+        delete (HTMLMediaElement.prototype as HTMLMediaElement & { textTracks?: TextTrackList })
+          .textTracks;
+      }
+      if (originalAddTextTrack) {
+        Object.defineProperty(HTMLMediaElement.prototype, "addTextTrack", {
+          configurable: true,
+          value: originalAddTextTrack,
+        });
+      } else {
+        delete (
+          HTMLMediaElement.prototype as HTMLMediaElement & {
+            addTextTrack?: HTMLMediaElement["addTextTrack"];
+          }
+        ).addTextTrack;
+      }
+    }
   });
 });

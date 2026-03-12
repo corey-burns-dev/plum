@@ -101,7 +101,7 @@ type TranscodingSettingsWarning struct {
 
 func DefaultTranscodingSettings() TranscodingSettings {
 	return TranscodingSettings{
-		VAAPIEnabled:    false,
+		VAAPIEnabled:    true,
 		VAAPIDevicePath: defaultVAAPIDevicePath,
 		DecodeCodecs: DecodeCodecSettings{
 			H264:      true,
@@ -114,7 +114,7 @@ func DefaultTranscodingSettings() TranscodingSettings {
 			HEVC10Bit: true,
 			VP910Bit:  true,
 		},
-		HardwareEncodingEnabled: false,
+		HardwareEncodingEnabled: true,
 		EncodeFormats: EncodeFormatSettings{
 			H264: true,
 			HEVC: false,

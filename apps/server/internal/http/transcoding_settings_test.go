@@ -45,8 +45,17 @@ func TestTranscodingSettingsHandler_GetDefaults(t *testing.T) {
 	if !payload.Settings.DecodeCodecs.HEVC10Bit || !payload.Settings.DecodeCodecs.VP910Bit {
 		t.Fatalf("expected 10-bit decode defaults to be enabled: %+v", payload.Settings.DecodeCodecs)
 	}
-	if payload.Settings.HardwareEncodingEnabled {
-		t.Fatalf("expected hardware encoding to default off")
+	if !payload.Settings.VAAPIEnabled {
+		t.Fatalf("expected vaapi to default on")
+	}
+	if !payload.Settings.HardwareEncodingEnabled {
+		t.Fatalf("expected hardware encoding to default on")
+	}
+	if !payload.Settings.EncodeFormats.H264 || payload.Settings.EncodeFormats.HEVC || payload.Settings.EncodeFormats.AV1 {
+		t.Fatalf("expected compatibility-first encode defaults: %+v", payload.Settings.EncodeFormats)
+	}
+	if payload.Settings.PreferredHardwareEncodeFormat != "h264" {
+		t.Fatalf("preferred format = %q", payload.Settings.PreferredHardwareEncodeFormat)
 	}
 }
 
