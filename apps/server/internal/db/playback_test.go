@@ -3,6 +3,7 @@ package db
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"testing"
@@ -127,6 +128,192 @@ func TestGetHomeDashboardForUser_DropsShowWhenNoNextEpisodeExists(t *testing.T) 
 	}
 	if len(dashboard.ContinueWatching) != 0 {
 		t.Fatalf("expected no continue-watching entries, got %+v", dashboard.ContinueWatching)
+	}
+}
+
+func TestGetHomeDashboardForUser_IncludesNonMusicLibrariesInContinueWatching(t *testing.T) {
+	dbConn := newTestDB(t)
+	t.Cleanup(func() { _ = dbConn.Close() })
+
+	userID := getSingleUserID(t, dbConn)
+	movieLibraryID := getLibraryID(t, dbConn, LibraryTypeMovie)
+	animeLibraryID := createLibraryForTest(t, dbConn, LibraryTypeAnime, "/anime-dashboard")
+	musicLibraryID := createLibraryForTest(t, dbConn, LibraryTypeMusic, "/music-dashboard")
+
+	movieID := insertMovieForDashboardTest(t, dbConn, movieLibraryID, "Arrival", "/movies/Arrival.mkv")
+	animeEpisodeID := insertEpisodeForDashboardTestWithKind(
+		t,
+		dbConn,
+		animeLibraryID,
+		LibraryTypeAnime,
+		"Sky Quest - S01E01 - Launch",
+		"/anime/Sky Quest/S01E01.mkv",
+		1,
+		1,
+	)
+	musicID := insertMusicTrackForDashboardTest(t, dbConn, musicLibraryID, "Track One", "/music/Track One.mp3")
+
+	if err := UpsertPlaybackProgress(dbConn, userID, movieID, 1200, 7200, false); err != nil {
+		t.Fatalf("partial movie: %v", err)
+	}
+	if err := UpsertPlaybackProgress(dbConn, userID, animeEpisodeID, 600, 1800, false); err != nil {
+		t.Fatalf("partial anime episode: %v", err)
+	}
+	if err := UpsertPlaybackProgress(dbConn, userID, musicID, 30, 240, false); err != nil {
+		t.Fatalf("partial music track: %v", err)
+	}
+	setPlaybackTimestamp(t, dbConn, userID, movieID, "2026-03-19T10:00:00Z")
+	setPlaybackTimestamp(t, dbConn, userID, animeEpisodeID, "2026-03-20T10:00:00Z")
+	setPlaybackTimestamp(t, dbConn, userID, musicID, "2026-03-21T10:00:00Z")
+
+	dashboard, err := GetHomeDashboardForUser(dbConn, userID)
+	if err != nil {
+		t.Fatalf("get home dashboard: %v", err)
+	}
+	if len(dashboard.ContinueWatching) != 2 {
+		t.Fatalf("entries = %+v", dashboard.ContinueWatching)
+	}
+	if dashboard.ContinueWatching[0].Kind != "show" || dashboard.ContinueWatching[0].Media.ID != animeEpisodeID {
+		t.Fatalf("expected anime entry first, got %+v", dashboard.ContinueWatching[0])
+	}
+	if dashboard.ContinueWatching[1].Kind != "movie" || dashboard.ContinueWatching[1].Media.ID != movieID {
+		t.Fatalf("expected movie entry second, got %+v", dashboard.ContinueWatching[1])
+	}
+	for _, entry := range dashboard.ContinueWatching {
+		if entry.Media.ID == musicID || entry.Media.Type == LibraryTypeMusic {
+			t.Fatalf("expected music to be excluded from continue watching, got %+v", dashboard.ContinueWatching)
+		}
+	}
+}
+
+func TestGetHomeDashboardForUser_EmitsEmptyMediaSlicesInJSON(t *testing.T) {
+	dbConn := newTestDB(t)
+	t.Cleanup(func() { _ = dbConn.Close() })
+
+	userID := getSingleUserID(t, dbConn)
+	tvLibraryID := getLibraryID(t, dbConn, LibraryTypeTV)
+
+	episodeID := insertEpisodeForDashboardTest(
+		t,
+		dbConn,
+		tvLibraryID,
+		"Space Show - S01E01 - Pilot",
+		"/tv/Space Show/S01E01.mkv",
+		1,
+		1,
+	)
+	if err := UpsertPlaybackProgress(dbConn, userID, episodeID, 900, 1800, false); err != nil {
+		t.Fatalf("partial episode: %v", err)
+	}
+	setPlaybackTimestamp(t, dbConn, userID, episodeID, "2026-03-20T10:00:00Z")
+
+	dashboard, err := GetHomeDashboardForUser(dbConn, userID)
+	if err != nil {
+		t.Fatalf("get home dashboard: %v", err)
+	}
+	if len(dashboard.ContinueWatching) != 1 {
+		t.Fatalf("entries = %+v", dashboard.ContinueWatching)
+	}
+
+	payload, err := json.Marshal(dashboard)
+	if err != nil {
+		t.Fatalf("marshal dashboard: %v", err)
+	}
+
+	var decoded struct {
+		ContinueWatching []struct {
+			Media struct {
+				Subtitles           []json.RawMessage `json:"subtitles"`
+				EmbeddedSubtitles   []json.RawMessage `json:"embeddedSubtitles"`
+				EmbeddedAudioTracks []json.RawMessage `json:"embeddedAudioTracks"`
+			} `json:"media"`
+		} `json:"continueWatching"`
+	}
+	if err := json.Unmarshal(payload, &decoded); err != nil {
+		t.Fatalf("unmarshal dashboard: %v", err)
+	}
+	if len(decoded.ContinueWatching) != 1 {
+		t.Fatalf("decoded entries = %+v", decoded.ContinueWatching)
+	}
+
+	media := decoded.ContinueWatching[0].Media
+	if media.Subtitles == nil {
+		t.Fatal("expected subtitles to encode as an empty array, got null")
+	}
+	if media.EmbeddedSubtitles == nil {
+		t.Fatal("expected embeddedSubtitles to encode as an empty array, got null")
+	}
+	if media.EmbeddedAudioTracks == nil {
+		t.Fatal("expected embeddedAudioTracks to encode as an empty array, got null")
+	}
+}
+
+func TestGetHomeDashboardForUser_RecentlyAddedMixesLibrariesAndGroupsShows(t *testing.T) {
+	dbConn := newTestDB(t)
+	t.Cleanup(func() { _ = dbConn.Close() })
+
+	userID := getSingleUserID(t, dbConn)
+	movieLibraryID := getLibraryID(t, dbConn, LibraryTypeMovie)
+	tvLibraryID := getLibraryID(t, dbConn, LibraryTypeTV)
+	animeLibraryID := createLibraryForTest(t, dbConn, LibraryTypeAnime, "/anime-recent")
+	musicLibraryID := createLibraryForTest(t, dbConn, LibraryTypeMusic, "/music-recent")
+
+	movieID := insertMovieForDashboardTest(t, dbConn, movieLibraryID, "Arrival", "/movies/Arrival.mkv")
+	_ = insertEpisodeForDashboardTestWithKind(
+		t,
+		dbConn,
+		tvLibraryID,
+		LibraryTypeTV,
+		"Space Show - S01E01 - Pilot",
+		"/tv/Space Show/S01E01.mkv",
+		1,
+		1,
+	)
+	newestTVEpisodeID := insertEpisodeForDashboardTestWithKind(
+		t,
+		dbConn,
+		tvLibraryID,
+		LibraryTypeTV,
+		"Space Show - S01E02 - Arrival",
+		"/tv/Space Show/S01E02.mkv",
+		1,
+		2,
+	)
+	animeEpisodeID := insertEpisodeForDashboardTestWithKind(
+		t,
+		dbConn,
+		animeLibraryID,
+		LibraryTypeAnime,
+		"Ninja Show - S01E01 - Begin",
+		"/anime/Ninja Show/S01E01.mkv",
+		1,
+		1,
+	)
+	musicID := insertMusicTrackForDashboardTest(t, dbConn, musicLibraryID, "Track One", "/music/Track One.mp3")
+
+	dashboard, err := GetHomeDashboardForUser(dbConn, userID)
+	if err != nil {
+		t.Fatalf("get home dashboard: %v", err)
+	}
+	if len(dashboard.RecentlyAdded) != 3 {
+		t.Fatalf("recently added = %+v", dashboard.RecentlyAdded)
+	}
+	if dashboard.RecentlyAdded[0].Kind != "show" || dashboard.RecentlyAdded[0].Media.ID != animeEpisodeID {
+		t.Fatalf("expected anime show first, got %+v", dashboard.RecentlyAdded[0])
+	}
+	if dashboard.RecentlyAdded[1].Kind != "show" || dashboard.RecentlyAdded[1].Media.ID != newestTVEpisodeID {
+		t.Fatalf("expected grouped TV show second, got %+v", dashboard.RecentlyAdded[1])
+	}
+	if dashboard.RecentlyAdded[1].ShowTitle != "Space Show" || dashboard.RecentlyAdded[1].EpisodeLabel != "S01E02" {
+		t.Fatalf("unexpected grouped TV labels: %+v", dashboard.RecentlyAdded[1])
+	}
+	if dashboard.RecentlyAdded[2].Kind != "movie" || dashboard.RecentlyAdded[2].Media.ID != movieID {
+		t.Fatalf("expected movie third, got %+v", dashboard.RecentlyAdded[2])
+	}
+	for _, entry := range dashboard.RecentlyAdded {
+		if entry.Media.ID == musicID || entry.Media.Type == LibraryTypeMusic {
+			t.Fatalf("expected music to be excluded from recently added, got %+v", dashboard.RecentlyAdded)
+		}
 	}
 }
 
@@ -290,14 +477,22 @@ func getSingleUserID(t *testing.T, dbConn *sql.DB) int {
 }
 
 func insertEpisodeForDashboardTest(t *testing.T, dbConn *sql.DB, libraryID int, title, path string, season, episode int) int {
+	return insertEpisodeForDashboardTestWithKind(t, dbConn, libraryID, LibraryTypeTV, title, path, season, episode)
+}
+
+func insertEpisodeForDashboardTestWithKind(t *testing.T, dbConn *sql.DB, libraryID int, kind, title, path string, season, episode int) int {
 	t.Helper()
 	var refID int
-	if err := dbConn.QueryRow(`INSERT INTO tv_episodes (library_id, title, path, duration, match_status, season, episode) VALUES (?, ?, ?, ?, ?, ?, ?) RETURNING id`,
+	table := "tv_episodes"
+	if kind == LibraryTypeAnime {
+		table = "anime_episodes"
+	}
+	if err := dbConn.QueryRow(`INSERT INTO `+table+` (library_id, title, path, duration, match_status, season, episode) VALUES (?, ?, ?, ?, ?, ?, ?) RETURNING id`,
 		libraryID, title, path, 1800, MatchStatusLocal, season, episode).Scan(&refID); err != nil {
 		t.Fatalf("insert episode: %v", err)
 	}
 	var globalID int
-	if err := dbConn.QueryRow(`INSERT INTO media_global (kind, ref_id) VALUES (?, ?) RETURNING id`, LibraryTypeTV, refID).Scan(&globalID); err != nil {
+	if err := dbConn.QueryRow(`INSERT INTO media_global (kind, ref_id) VALUES (?, ?) RETURNING id`, kind, refID).Scan(&globalID); err != nil {
 		t.Fatalf("insert global episode: %v", err)
 	}
 	return globalID
@@ -313,6 +508,20 @@ func insertMovieForDashboardTest(t *testing.T, dbConn *sql.DB, libraryID int, ti
 	var globalID int
 	if err := dbConn.QueryRow(`INSERT INTO media_global (kind, ref_id) VALUES (?, ?) RETURNING id`, LibraryTypeMovie, refID).Scan(&globalID); err != nil {
 		t.Fatalf("insert global movie: %v", err)
+	}
+	return globalID
+}
+
+func insertMusicTrackForDashboardTest(t *testing.T, dbConn *sql.DB, libraryID int, title, path string) int {
+	t.Helper()
+	var refID int
+	if err := dbConn.QueryRow(`INSERT INTO music_tracks (library_id, title, path, duration, match_status) VALUES (?, ?, ?, ?, ?) RETURNING id`,
+		libraryID, title, path, 240, MatchStatusLocal).Scan(&refID); err != nil {
+		t.Fatalf("insert music track: %v", err)
+	}
+	var globalID int
+	if err := dbConn.QueryRow(`INSERT INTO media_global (kind, ref_id) VALUES (?, ?) RETURNING id`, LibraryTypeMusic, refID).Scan(&globalID); err != nil {
+		t.Fatalf("insert global music track: %v", err)
 	}
 	return globalID
 }

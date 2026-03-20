@@ -9,7 +9,7 @@ export function MainLayout() {
   const reserveDockSpace = isDockOpen && activeMode === "music" && viewMode === "docked";
 
   return (
-    <div className="flex min-h-screen flex-col">
+    <div className="flex h-screen overflow-hidden flex-col">
       <TopBar />
       <div className="flex flex-1 min-h-0">
         <Sidebar />

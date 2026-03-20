@@ -19,6 +19,7 @@ export type {
   PlumWebSocketCommand,
   PlaybackSession,
   PlumWebSocketEvent,
+  RecentlyAddedEntry,
   ScanLibraryResult,
   SeriesDetails,
   SeriesSearchResult,
@@ -35,9 +36,7 @@ export type {
   VaapiDecodeCodec,
 } from "@plum/shared";
 
-export const BASE_URL = ensureBaseUrl(
-  import.meta.env.VITE_BACKEND_URL as string | undefined,
-);
+export const BASE_URL = ensureBaseUrl(import.meta.env.VITE_BACKEND_URL as string | undefined);
 
 const client = createPlumApiClient({
   baseUrl: BASE_URL,

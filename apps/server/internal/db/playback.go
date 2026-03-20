@@ -11,6 +11,7 @@ import (
 const (
 	completedProgressPercent = 95.0
 	completedRemainingSecs   = 120.0
+	recentlyAddedLimit       = 24
 )
 
 type ContinueWatchingEntry struct {
@@ -23,8 +24,17 @@ type ContinueWatchingEntry struct {
 	activityAt       string
 }
 
+type RecentlyAddedEntry struct {
+	Kind         string    `json:"kind"`
+	Media        MediaItem `json:"media"`
+	ShowKey      string    `json:"show_key,omitempty"`
+	ShowTitle    string    `json:"show_title,omitempty"`
+	EpisodeLabel string    `json:"episode_label,omitempty"`
+}
+
 type HomeDashboard struct {
 	ContinueWatching []ContinueWatchingEntry `json:"continueWatching"`
+	RecentlyAdded    []RecentlyAddedEntry    `json:"recentlyAdded"`
 }
 
 type playbackProgressRow struct {
@@ -44,7 +54,11 @@ func GetMediaByLibraryIDForUser(db *sql.DB, libraryID int, userID int) ([]MediaI
 }
 
 func GetHomeDashboardForUser(db *sql.DB, userID int) (HomeDashboard, error) {
-	items, err := queryAllMediaByKind(db, "")
+	items, err := queryAllMediaByKind(db, userID, "")
+	if err != nil {
+		return HomeDashboard{}, err
+	}
+	items, err = attachSubtitlesBatch(db, items)
 	if err != nil {
 		return HomeDashboard{}, err
 	}
@@ -53,6 +67,13 @@ func GetHomeDashboardForUser(db *sql.DB, userID int) (HomeDashboard, error) {
 		return HomeDashboard{}, err
 	}
 
+	return HomeDashboard{
+		ContinueWatching: buildContinueWatching(items),
+		RecentlyAdded:    buildRecentlyAdded(items),
+	}, nil
+}
+
+func buildContinueWatching(items []MediaItem) []ContinueWatchingEntry {
 	movies := make([]ContinueWatchingEntry, 0)
 	showItems := make(map[string][]MediaItem)
 	for _, item := range items {
@@ -90,7 +111,46 @@ func GetHomeDashboardForUser(db *sql.DB, userID int) (HomeDashboard, error) {
 		return entries[i].activityAt > entries[j].activityAt
 	})
 
-	return HomeDashboard{ContinueWatching: entries}, nil
+	return entries
+}
+
+func buildRecentlyAdded(items []MediaItem) []RecentlyAddedEntry {
+	entries := make([]RecentlyAddedEntry, 0)
+	showItems := make(map[string][]MediaItem)
+	for _, item := range items {
+		if item.Type == LibraryTypeMusic {
+			continue
+		}
+		if item.Type == LibraryTypeMovie {
+			entries = append(entries, RecentlyAddedEntry{
+				Kind:  "movie",
+				Media: item,
+			})
+			continue
+		}
+		if item.Type != LibraryTypeTV && item.Type != LibraryTypeAnime {
+			continue
+		}
+		key := showKeyFromItem(item.TMDBID, item.Title)
+		showItems[key] = append(showItems[key], item)
+	}
+	for showKey, episodes := range showItems {
+		entry, ok := recentlyAddedEntryForShow(showKey, episodes)
+		if !ok {
+			continue
+		}
+		entries = append(entries, entry)
+	}
+	sort.Slice(entries, func(i, j int) bool {
+		if entries[i].Media.ID != entries[j].Media.ID {
+			return entries[i].Media.ID > entries[j].Media.ID
+		}
+		return entries[i].Media.Title < entries[j].Media.Title
+	})
+	if len(entries) > recentlyAddedLimit {
+		return entries[:recentlyAddedLimit]
+	}
+	return entries
 }
 
 func continueWatchingEntryForShow(showKey string, episodes []MediaItem) (ContinueWatchingEntry, bool) {
@@ -153,6 +213,25 @@ func buildShowContinueWatchingEntry(showKey string, item MediaItem, activityAt s
 		RemainingSeconds: item.RemainingSeconds,
 		activityAt:       activityAt,
 	}
+}
+
+func recentlyAddedEntryForShow(showKey string, episodes []MediaItem) (RecentlyAddedEntry, bool) {
+	if len(episodes) == 0 {
+		return RecentlyAddedEntry{}, false
+	}
+	newest := episodes[0]
+	for i := 1; i < len(episodes); i++ {
+		if episodes[i].ID > newest.ID {
+			newest = episodes[i]
+		}
+	}
+	return RecentlyAddedEntry{
+		Kind:         "show",
+		Media:        newest,
+		ShowKey:      showKey,
+		ShowTitle:    showTitleFromEpisodeTitle(newest.Title),
+		EpisodeLabel: episodeLabel(newest),
+	}, true
 }
 
 func UpsertPlaybackProgress(db *sql.DB, userID, mediaID int, positionSeconds, durationSeconds float64, completed bool) error {

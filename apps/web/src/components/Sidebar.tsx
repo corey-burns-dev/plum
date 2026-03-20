@@ -8,9 +8,9 @@ import { useIdentifyQueue } from "@/contexts/IdentifyQueueContext";
 import { useScanQueue } from "@/contexts/ScanQueueContext";
 
 function LibraryIcon({ lib }: { lib: Library }) {
-  if (lib.type === "music") return <Music className="size-4 shrink-0 opacity-70" />;
-  if (lib.type === "movie") return <Film className="size-4 shrink-0 opacity-70" />;
-  return <Tv className="size-4 shrink-0 opacity-70" />;
+  if (lib.type === "music") return <Music className="size-[18px] shrink-0 opacity-70" />;
+  if (lib.type === "movie") return <Film className="size-[18px] shrink-0 opacity-70" />;
+  return <Tv className="size-[18px] shrink-0 opacity-70" />;
 }
 
 export function Sidebar() {
@@ -23,7 +23,7 @@ export function Sidebar() {
   const isHomeRoute = location.pathname === "/";
 
   return (
-    <aside className="flex w-56 shrink-0 flex-col border-r border-[var(--plum-border)] bg-[var(--plum-panel)]/60">
+    <aside className="flex w-56 shrink-0 flex-col border-r border-[var(--plum-border)] bg-[var(--plum-panel)]/60 overflow-y-auto">
       <nav className="flex flex-col gap-0.5 p-3" aria-label="Libraries">
         <Link
           to="/"
@@ -34,7 +34,7 @@ export function Sidebar() {
               : "text-[var(--plum-text)] hover:bg-[var(--plum-panel-alt)] hover:text-[var(--plum-text)]",
           )}
         >
-          <Home className="size-4 shrink-0 opacity-70" />
+          <Home className="size-[18px] shrink-0 opacity-70" />
           <span className="truncate">Home</span>
         </Link>
         <div className="mb-2 px-2 text-xs font-medium uppercase tracking-wider text-[var(--plum-muted)]">

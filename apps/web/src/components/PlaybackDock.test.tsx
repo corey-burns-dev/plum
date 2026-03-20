@@ -98,6 +98,14 @@ function renderDock() {
   };
 }
 
+function setVideoCurrentTime(video: HTMLVideoElement, currentTime: number) {
+  Object.defineProperty(video, "currentTime", {
+    configurable: true,
+    value: currentTime,
+    writable: true,
+  });
+}
+
 describe("PlaybackDock audio track selection", () => {
   beforeEach(() => {
     vi.restoreAllMocks();
@@ -213,6 +221,100 @@ describe("PlaybackDock audio track selection", () => {
     expect(mockHlsInstances[1]?.loadSource).toHaveBeenCalledWith(
       "http://localhost:3000/api/playback/sessions/session-1/revisions/2/index.m3u8",
     );
+  });
+
+  it("persists initial playback progress before the periodic interval elapses", async () => {
+    const { container } = renderDock();
+    const video = container.querySelector("video") as HTMLVideoElement | null;
+    expect(video).toBeTruthy();
+    if (!video) {
+      throw new Error("Expected a video element");
+    }
+
+    setVideoCurrentTime(video, 3);
+
+    fireEvent.timeUpdate(video);
+
+    await waitFor(() => {
+      expect(api.updateMediaProgress).toHaveBeenCalledWith(42, {
+        position_seconds: 3,
+        duration_seconds: 120,
+        completed: false,
+      });
+    });
+  });
+
+  it("persists playback position when switching from docked to fullscreen", async () => {
+    const { container } = renderDock();
+    const dockedVideo = container.querySelector("video") as HTMLVideoElement | null;
+    expect(dockedVideo).toBeTruthy();
+    if (!dockedVideo) {
+      throw new Error("Expected a docked video element");
+    }
+
+    setVideoCurrentTime(dockedVideo, 37);
+    fireEvent.timeUpdate(dockedVideo);
+    vi.mocked(api.updateMediaProgress).mockClear();
+    fireEvent.click(screen.getByRole("button", { name: /Open fullscreen player for/i }));
+
+    await waitFor(() => {
+      expect(api.updateMediaProgress).toHaveBeenCalledWith(42, {
+        position_seconds: 37,
+        duration_seconds: 120,
+        completed: false,
+      });
+    });
+  });
+
+  it("persists playback position when switching from fullscreen to docked", async () => {
+    mockUsePlayer.mockReturnValue({
+      ...mockUsePlayer.mock.results.at(-1)?.value,
+      viewMode: "fullscreen",
+    });
+
+    renderDock();
+    const fullscreenPlayer = await screen.findByLabelText("Fullscreen video player");
+    const fullscreenVideo = fullscreenPlayer.querySelector("video") as HTMLVideoElement | null;
+    expect(fullscreenVideo).toBeTruthy();
+    if (!fullscreenVideo) {
+      throw new Error("Expected a fullscreen video element");
+    }
+
+    setVideoCurrentTime(fullscreenVideo, 52);
+    fireEvent.timeUpdate(fullscreenVideo);
+    vi.mocked(api.updateMediaProgress).mockClear();
+    fireEvent.click(screen.getAllByRole("button", { name: /Return to docked player/i })[0]!);
+
+    await waitFor(() => {
+      expect(api.updateMediaProgress).toHaveBeenCalledWith(42, {
+        position_seconds: 52,
+        duration_seconds: 120,
+        completed: false,
+      });
+    });
+  });
+
+  it("persists the latest playback position when closing the player", async () => {
+    const { container } = renderDock();
+    const video = container.querySelector("video") as HTMLVideoElement | null;
+    expect(video).toBeTruthy();
+    if (!video) {
+      throw new Error("Expected a video element");
+    }
+
+    setVideoCurrentTime(video, 41);
+    fireEvent.timeUpdate(video);
+    vi.mocked(api.updateMediaProgress).mockClear();
+
+    fireEvent.click(screen.getByRole("button", { name: "Close player" }));
+
+    await waitFor(() => {
+      expect(api.updateMediaProgress).toHaveBeenCalledWith(42, {
+        position_seconds: 41,
+        duration_seconds: 120,
+        completed: false,
+      });
+    });
   });
 
   it("keeps the active HLS attachment when mute state rerenders the player", async () => {
@@ -459,9 +561,11 @@ describe("PlaybackDock audio track selection", () => {
       },
     });
 
-    const fetchSpy = vi.spyOn(globalThis, "fetch").mockResolvedValue(
-      new Response("WEBVTT\n\n00:00:00.000 --> 00:00:02.000\nHello world\n", { status: 200 }),
-    );
+    const fetchSpy = vi
+      .spyOn(globalThis, "fetch")
+      .mockResolvedValue(
+        new Response("WEBVTT\n\n00:00:00.000 --> 00:00:02.000\nHello world\n", { status: 200 }),
+      );
 
     mockUsePlayer.mockReturnValue({
       ...mockUsePlayer.mock.results.at(-1)?.value,
@@ -522,7 +626,11 @@ describe("PlaybackDock audio track selection", () => {
         });
       }
       if (originalTextTracksDescriptor) {
-        Object.defineProperty(HTMLMediaElement.prototype, "textTracks", originalTextTracksDescriptor);
+        Object.defineProperty(
+          HTMLMediaElement.prototype,
+          "textTracks",
+          originalTextTracksDescriptor,
+        );
       } else {
         Reflect.deleteProperty(
           HTMLMediaElement.prototype as HTMLMediaElement & { textTracks?: TextTrackList },

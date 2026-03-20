@@ -17,6 +17,7 @@ import type {
   PlumWebSocketCommand,
   PlumWebSocketEvent,
   PlaybackSession,
+  RecentlyAddedEntry,
   ScanLibraryResult,
   SeriesDetails,
   SeriesSearchResult,
@@ -82,6 +83,7 @@ export type {
   PlumWebSocketCommand,
   PlumWebSocketEvent,
   PlaybackSession,
+  RecentlyAddedEntry,
   ScanLibraryResult,
   SeriesDetails,
   SeriesSearchResult,
@@ -136,9 +138,7 @@ export class ApiDecodeError extends Data.TaggedError("ApiDecodeError")<{
   readonly cause: unknown;
 }> {}
 
-export class IdentifyTimeoutError extends Data.TaggedError(
-  "IdentifyTimeoutError",
-)<{
+export class IdentifyTimeoutError extends Data.TaggedError("IdentifyTimeoutError")<{
   readonly libraryId: number;
   readonly message: string;
 }> {}
@@ -163,9 +163,7 @@ export interface CreatePlumApiClientOptions {
   readonly fetchOptions?: RequestInit;
 }
 
-interface JsonRequestOptions<
-  S extends Schema.Top & { readonly DecodingServices: never },
-> {
+interface JsonRequestOptions<S extends Schema.Top & { readonly DecodingServices: never }> {
   readonly path: string;
   readonly schema: S;
   readonly method?: string;
@@ -175,10 +173,7 @@ interface JsonRequestOptions<
     response: Response,
     url: string,
   ) => Effect.Effect<S["Type"], PlumApiError> | null;
-  readonly errorMessage?: (details: {
-    readonly status: number;
-    readonly body: string;
-  }) => string;
+  readonly errorMessage?: (details: { readonly status: number; readonly body: string }) => string;
 }
 
 interface VoidRequestOptions {
@@ -190,10 +185,7 @@ interface VoidRequestOptions {
     response: Response,
     url: string,
   ) => Effect.Effect<void, PlumApiError> | null;
-  readonly errorMessage?: (details: {
-    readonly status: number;
-    readonly body: string;
-  }) => string;
+  readonly errorMessage?: (details: { readonly status: number; readonly body: string }) => string;
 }
 
 type RequestSignal = {
@@ -207,10 +199,7 @@ function isAbortError(cause: unknown): boolean {
     : cause instanceof Error && cause.name === "AbortError";
 }
 
-function combineAbortSignals(
-  primary: AbortSignal,
-  secondary?: AbortSignal,
-): RequestSignal {
+function combineAbortSignals(primary: AbortSignal, secondary?: AbortSignal): RequestSignal {
   if (!secondary) {
     return { signal: primary, cleanup: () => {} };
   }
@@ -246,15 +235,11 @@ function combineAbortSignals(
   };
 }
 
-export function effectErrorToError(
-  error: PlumApiError | IdentifyTimeoutError,
-): Error {
+export function effectErrorToError(error: PlumApiError | IdentifyTimeoutError): Error {
   return new Error(error.message);
 }
 
-function decodeSchemaEffect<
-  S extends Schema.Top & { readonly DecodingServices: never },
->(
+function decodeSchemaEffect<S extends Schema.Top & { readonly DecodingServices: never }>(
   schema: S,
   payload: unknown,
   method: string,
@@ -274,9 +259,7 @@ function decodeSchemaEffect<
   );
 }
 
-export function parsePlumWebSocketEvent(
-  raw: string,
-): PlumWebSocketEvent | null {
+export function parsePlumWebSocketEvent(raw: string): PlumWebSocketEvent | null {
   try {
     const parsed = JSON.parse(raw);
     return Schema.decodeUnknownSync(PlumWebSocketEventSchema)(parsed);
@@ -285,9 +268,7 @@ export function parsePlumWebSocketEvent(
   }
 }
 
-export function parsePlumWebSocketCommand(
-  raw: string,
-): PlumWebSocketCommand | null {
+export function parsePlumWebSocketCommand(raw: string): PlumWebSocketCommand | null {
   try {
     const parsed = JSON.parse(raw);
     return Schema.decodeUnknownSync(PlumWebSocketCommandSchema)(parsed);
@@ -296,9 +277,7 @@ export function parsePlumWebSocketCommand(
   }
 }
 
-export function serializePlumWebSocketCommand(
-  command: PlumWebSocketCommand,
-): string {
+export function serializePlumWebSocketCommand(command: PlumWebSocketCommand): string {
   const schema =
     command.action === "attach_playback_session"
       ? AttachPlaybackSessionCommandSchema
@@ -339,17 +318,11 @@ export function createPlumApiClient(options: CreatePlumApiClientOptions) {
     const url = buildBackendUrl(baseUrl, path);
     return Effect.tryPromise({
       try: (effectSignal) => {
-        const { signal: requestSignal, cleanup } = combineAbortSignals(
-          effectSignal,
-          signal,
-        );
+        const { signal: requestSignal, cleanup } = combineAbortSignals(effectSignal, signal);
         return fetchImpl(url, {
           ...mergedFetchOptions,
           method,
-          headers:
-            body === undefined
-              ? undefined
-              : { "Content-Type": "application/json" },
+          headers: body === undefined ? undefined : { "Content-Type": "application/json" },
           body: body === undefined ? undefined : JSON.stringify(body),
           signal: requestSignal,
         }).finally(cleanup);
@@ -418,10 +391,7 @@ export function createPlumApiClient(options: CreatePlumApiClientOptions) {
     response: Response,
     method: string,
     url: string,
-    errorMessage?: (details: {
-      readonly status: number;
-      readonly body: string;
-    }) => string,
+    errorMessage?: (details: { readonly status: number; readonly body: string }) => string,
   ): Effect.Effect<never, ApiAbortedError | ApiHttpError | ApiJsonError> =>
     readTextEffect(response, method, url).pipe(
       Effect.catchTag("ApiJsonError", () => Effect.succeed("")),
@@ -440,9 +410,7 @@ export function createPlumApiClient(options: CreatePlumApiClientOptions) {
       ),
     );
 
-  const jsonRequestEffect = <
-    S extends Schema.Top & { readonly DecodingServices: never },
-  >(
+  const jsonRequestEffect = <S extends Schema.Top & { readonly DecodingServices: never }>(
     request: JsonRequestOptions<S>,
   ): Effect.Effect<S["Type"], PlumApiError> => {
     const method = request.method ?? "GET";
@@ -454,10 +422,8 @@ export function createPlumApiClient(options: CreatePlumApiClientOptions) {
       signal: request.signal,
     }).pipe(
       Effect.flatMap((response) => {
-        const handled:
-          | Effect.Effect<S["Type"], PlumApiError>
-          | null
-          | undefined = request.handleResponse?.(response, url);
+        const handled: Effect.Effect<S["Type"], PlumApiError> | null | undefined =
+          request.handleResponse?.(response, url);
         if (handled) {
           return handled;
         }
@@ -479,9 +445,7 @@ export function createPlumApiClient(options: CreatePlumApiClientOptions) {
     );
   };
 
-  const voidRequestEffect = (
-    request: VoidRequestOptions,
-  ): Effect.Effect<void, PlumApiError> => {
+  const voidRequestEffect = (request: VoidRequestOptions): Effect.Effect<void, PlumApiError> => {
     const method = request.method ?? "GET";
     const url = buildBackendUrl(baseUrl, request.path);
     return requestEffect({
@@ -528,9 +492,7 @@ export function createPlumApiClient(options: CreatePlumApiClientOptions) {
             schema: UserSchema,
             body: validatedPayload,
             errorMessage: ({ status, body }) =>
-              status === 409
-                ? "Admin already exists."
-                : body || `Failed: ${status}`,
+              status === 409 ? "Admin already exists." : body || `Failed: ${status}`,
           }),
         ),
       ),
@@ -566,12 +528,7 @@ export function createPlumApiClient(options: CreatePlumApiClientOptions) {
           response.status === 401
             ? Effect.succeed<User | null>(null)
             : !response.ok
-              ? failHttpEffect(
-                  response,
-                  "GET",
-                  url,
-                  ({ status }) => `Me: ${status}`,
-                )
+              ? failHttpEffect(response, "GET", url, ({ status }) => `Me: ${status}`)
               : null,
       }),
     createLibrary: (payload: CreateLibraryPayload) =>
@@ -588,8 +545,7 @@ export function createPlumApiClient(options: CreatePlumApiClientOptions) {
             path: "/api/libraries",
             schema: LibrarySchema,
             body: validatedPayload,
-            errorMessage: ({ status, body }) =>
-              body || `Create library: ${status}`,
+            errorMessage: ({ status, body }) => body || `Create library: ${status}`,
           }),
         ),
       ),
@@ -597,8 +553,7 @@ export function createPlumApiClient(options: CreatePlumApiClientOptions) {
       jsonRequestEffect({
         path: "/api/libraries",
         schema: Schema.Array(LibrarySchema),
-        errorMessage: ({ status, body }) =>
-          `Libraries: ${status}${body ? ` ${body}` : ""}`,
+        errorMessage: ({ status, body }) => `Libraries: ${status}${body ? ` ${body}` : ""}`,
       }),
     updateLibraryPlaybackPreferences: (
       id: number,
@@ -642,10 +597,7 @@ export function createPlumApiClient(options: CreatePlumApiClientOptions) {
         schema: ScanLibraryResultSchema,
         errorMessage: ({ status, body }) => body || `Scan: ${status}`,
       }),
-    identifyLibrary: (
-      id: number,
-      options?: { readonly signal?: AbortSignal },
-    ) =>
+    identifyLibrary: (id: number, options?: { readonly signal?: AbortSignal }) =>
       jsonRequestEffect({
         method: "POST",
         path: `/api/libraries/${id}/identify`,
@@ -661,27 +613,20 @@ export function createPlumApiClient(options: CreatePlumApiClientOptions) {
           response.status === 404
             ? Effect.succeed<SeriesDetails | null>(null)
             : !response.ok
-              ? failHttpEffect(
-                  response,
-                  "GET",
-                  url,
-                  ({ status }) => `Series: ${status}`,
-                )
+              ? failHttpEffect(response, "GET", url, ({ status }) => `Series: ${status}`)
               : null,
       }),
     fetchLibraryMedia: (id: number) =>
       jsonRequestEffect({
         path: `/api/libraries/${id}/media`,
         schema: Schema.Array(MediaItemSchema),
-        errorMessage: ({ status, body }) =>
-          `Library media: ${status}${body ? ` ${body}` : ""}`,
+        errorMessage: ({ status, body }) => `Library media: ${status}${body ? ` ${body}` : ""}`,
       }),
     getHomeDashboard: () =>
       jsonRequestEffect({
         path: "/api/home",
         schema: HomeDashboardSchema,
-        errorMessage: ({ status, body }) =>
-          `Home: ${status}${body ? ` ${body}` : ""}`,
+        errorMessage: ({ status, body }) => `Home: ${status}${body ? ` ${body}` : ""}`,
       }),
     fetchMediaList: () =>
       jsonRequestEffect({
@@ -706,10 +651,7 @@ export function createPlumApiClient(options: CreatePlumApiClientOptions) {
           }),
         ),
       ),
-    createPlaybackSession: (
-      id: number,
-      payload?: CreatePlaybackSessionPayload,
-    ) =>
+    createPlaybackSession: (id: number, payload?: CreatePlaybackSessionPayload) =>
       (payload
         ? decodeSchemaEffect(
             CreatePlaybackSessionPayloadSchema,
@@ -726,15 +668,11 @@ export function createPlumApiClient(options: CreatePlumApiClientOptions) {
             path: `/api/playback/sessions/${id}`,
             schema: PlaybackSessionSchema,
             body: validatedPayload,
-            errorMessage: ({ status, body }) =>
-              body || `Create playback session: ${status}`,
+            errorMessage: ({ status, body }) => body || `Create playback session: ${status}`,
           }),
         ),
       ),
-    updatePlaybackSessionAudio: (
-      sessionId: string,
-      payload: UpdatePlaybackSessionAudioPayload,
-    ) =>
+    updatePlaybackSessionAudio: (sessionId: string, payload: UpdatePlaybackSessionAudioPayload) =>
       decodeSchemaEffect(
         UpdatePlaybackSessionAudioPayloadSchema,
         payload,
@@ -748,8 +686,7 @@ export function createPlumApiClient(options: CreatePlumApiClientOptions) {
             path: `/api/playback/sessions/${sessionId}/audio`,
             schema: PlaybackSessionSchema,
             body: validatedPayload,
-            errorMessage: ({ status, body }) =>
-              body || `Update playback session audio: ${status}`,
+            errorMessage: ({ status, body }) => body || `Update playback session audio: ${status}`,
           }),
         ),
       ),
@@ -757,15 +694,13 @@ export function createPlumApiClient(options: CreatePlumApiClientOptions) {
       voidRequestEffect({
         method: "DELETE",
         path: `/api/playback/sessions/${sessionId}`,
-        errorMessage: ({ status, body }) =>
-          body || `Close playback session: ${status}`,
+        errorMessage: ({ status, body }) => body || `Close playback session: ${status}`,
       }),
     getTranscodingSettings: () =>
       jsonRequestEffect({
         path: "/api/settings/transcoding",
         schema: TranscodingSettingsResponseSchema,
-        errorMessage: ({ status, body }) =>
-          body || `Transcoding settings: ${status}`,
+        errorMessage: ({ status, body }) => body || `Transcoding settings: ${status}`,
       }),
     updateTranscodingSettings: (payload: TranscodingSettings) =>
       decodeSchemaEffect(
@@ -781,8 +716,7 @@ export function createPlumApiClient(options: CreatePlumApiClientOptions) {
             path: "/api/settings/transcoding",
             schema: TranscodingSettingsResponseSchema,
             body: validatedPayload,
-            errorMessage: ({ status, body }) =>
-              body || `Save transcoding settings: ${status}`,
+            errorMessage: ({ status, body }) => body || `Save transcoding settings: ${status}`,
           }),
         ),
       ),
@@ -837,13 +771,11 @@ export function createPlumApiClient(options: CreatePlumApiClientOptions) {
     baseUrl,
     effects,
     getSetupStatus: () => run(effects.getSetupStatus()),
-    createAdmin: (payload: CredentialsPayload) =>
-      run(effects.createAdmin(payload)),
+    createAdmin: (payload: CredentialsPayload) => run(effects.createAdmin(payload)),
     login: (payload: CredentialsPayload) => run(effects.login(payload)),
     logout: () => run(effects.logout()),
     getMe: () => run(effects.getMe()),
-    createLibrary: (payload: CreateLibraryPayload) =>
-      run(effects.createLibrary(payload)),
+    createLibrary: (payload: CreateLibraryPayload) => run(effects.createLibrary(payload)),
     listLibraries: () => run(effects.listLibraries()),
     updateLibraryPlaybackPreferences: (
       id: number,
@@ -854,27 +786,19 @@ export function createPlumApiClient(options: CreatePlumApiClientOptions) {
       run(effects.startLibraryScan(id, options)),
     scanLibraryById: (id: number, options?: { readonly identify?: boolean }) =>
       run(effects.scanLibraryById(id, options)),
-    identifyLibrary: (
-      id: number,
-      options?: { readonly signal?: AbortSignal },
-    ) => run(effects.identifyLibrary(id, options)),
-    fetchSeriesByTmdbId: (tmdbId: number) =>
-      run(effects.fetchSeriesByTmdbId(tmdbId)),
+    identifyLibrary: (id: number, options?: { readonly signal?: AbortSignal }) =>
+      run(effects.identifyLibrary(id, options)),
+    fetchSeriesByTmdbId: (tmdbId: number) => run(effects.fetchSeriesByTmdbId(tmdbId)),
     fetchLibraryMedia: (id: number) => run(effects.fetchLibraryMedia(id)),
     getHomeDashboard: () => run(effects.getHomeDashboard()),
     fetchMediaList: () => run(effects.fetchMediaList()),
     updateMediaProgress: (id: number, payload: UpdateMediaProgressPayload) =>
       run(effects.updateMediaProgress(id, payload)),
-    createPlaybackSession: (
-      id: number,
-      payload?: CreatePlaybackSessionPayload,
-    ) => run(effects.createPlaybackSession(id, payload)),
-    updatePlaybackSessionAudio: (
-      sessionId: string,
-      payload: UpdatePlaybackSessionAudioPayload,
-    ) => run(effects.updatePlaybackSessionAudio(sessionId, payload)),
-    closePlaybackSession: (sessionId: string) =>
-      run(effects.closePlaybackSession(sessionId)),
+    createPlaybackSession: (id: number, payload?: CreatePlaybackSessionPayload) =>
+      run(effects.createPlaybackSession(id, payload)),
+    updatePlaybackSessionAudio: (sessionId: string, payload: UpdatePlaybackSessionAudioPayload) =>
+      run(effects.updatePlaybackSessionAudio(sessionId, payload)),
+    closePlaybackSession: (sessionId: string) => run(effects.closePlaybackSession(sessionId)),
     getTranscodingSettings: () => run(effects.getTranscodingSettings()),
     updateTranscodingSettings: (payload: TranscodingSettings) =>
       run(effects.updateTranscodingSettings(payload)),
@@ -909,9 +833,7 @@ export function loadAuthSessionEffect(
     };
   }).pipe(
     Effect.retry({
-      schedule: Schedule.addDelay(Schedule.recurs(retries), () =>
-        Effect.succeed(retryDelayMs),
-      ),
+      schedule: Schedule.addDelay(Schedule.recurs(retries), () => Effect.succeed(retryDelayMs)),
     }),
   );
 }
@@ -954,8 +876,6 @@ export function runIdentifyLibraryTask(
   },
 ): Promise<IdentifyResult> {
   return Effect.runPromise(
-    identifyLibraryTaskEffect(api, options).pipe(
-      Effect.mapError(effectErrorToError),
-    ),
+    identifyLibraryTaskEffect(api, options).pipe(Effect.mapError(effectErrorToError)),
   );
 }

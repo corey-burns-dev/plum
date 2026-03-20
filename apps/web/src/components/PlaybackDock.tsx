@@ -83,6 +83,14 @@ type LoadedSubtitleTrack = SubtitleTrackOption & {
   body: string;
 };
 
+type VideoProgressSnapshot = {
+  mediaId: number;
+  positionSeconds: number;
+  durationSeconds: number;
+  shouldResumePlayback: boolean;
+  ended: boolean;
+};
+
 const CONTROLS_HIDE_DELAY = 3000;
 
 /* ── Track popover menu (shared between docked & fullscreen) ── */
@@ -213,7 +221,11 @@ function PlayerSettingsMenu({
 
       <div className="player-settings-menu__field">
         <span>Controls look</span>
-        <div className="player-settings-menu__choice-row" role="group" aria-label="Player controls look">
+        <div
+          className="player-settings-menu__choice-row"
+          role="group"
+          aria-label="Player controls look"
+        >
           {playerControlsAppearanceOptions.map((option) => (
             <button
               key={option.value}
@@ -243,6 +255,7 @@ export function PlaybackDock() {
     positionSeconds: number;
     completed: boolean;
   } | null>(null);
+  const initialProgressPersistedRef = useRef<number | null>(null);
   const resumeAppliedRef = useRef<number | null>(null);
   const defaultTrackSelectionAppliedRef = useRef<number | null>(null);
   const [playbackState, setPlaybackState] = useState<PlaybackState>({
@@ -253,9 +266,8 @@ export function PlaybackDock() {
   const [subtitleAppearance, setSubtitleAppearance] = useState<SubtitleAppearance>(() =>
     readStoredSubtitleAppearance(),
   );
-  const [playerControlsAppearance, setPlayerControlsAppearance] = useState<PlayerControlsAppearance>(
-    () => readStoredPlayerControlsAppearance(),
-  );
+  const [playerControlsAppearance, setPlayerControlsAppearance] =
+    useState<PlayerControlsAppearance>(() => readStoredPlayerControlsAppearance());
   const [selectedSubtitleKey, setSelectedSubtitleKey] = useState("off");
   const [loadedSubtitleTracks, setLoadedSubtitleTracks] = useState<LoadedSubtitleTrack[]>([]);
   const [failedSubtitleKeys, setFailedSubtitleKeys] = useState<string[]>([]);
@@ -291,6 +303,7 @@ export function PlaybackDock() {
   const manualSubtitleTrackRef = useRef<TextTrack | null>(null);
   const manualSubtitleVideoRef = useRef<HTMLVideoElement | null>(null);
   const subtitleLoadControllersRef = useRef<Map<string, AbortController>>(new Map());
+  const lastVideoProgressRef = useRef<VideoProgressSnapshot | null>(null);
   const {
     activeItem,
     activeMode,
@@ -416,7 +429,10 @@ export function PlaybackDock() {
             : [...current, { ...track, body }],
         );
       } catch (error) {
-        if ((error instanceof DOMException && error.name === "AbortError") || controller.signal.aborted) {
+        if (
+          (error instanceof DOMException && error.name === "AbortError") ||
+          controller.signal.aborted
+        ) {
           return;
         }
         console.error("[PlaybackDock] Subtitle load failed", {
@@ -526,38 +542,83 @@ export function PlaybackDock() {
     return nudged;
   }, []);
 
-  const persistPlaybackProgress = useCallback(
-    async (options?: { force?: boolean; completed?: boolean }) => {
-      if (!isVideo || !activeItem) return;
-      const video = videoRef.current;
-      if (!video) return;
-      const duration = resolvedVideoDuration(activeItem.duration, video.duration);
-      if (!Number.isFinite(duration) || duration <= 0) return;
-      const positionSeconds = Math.max(
-        0,
-        Math.min(
-          Number.isFinite(video.currentTime) ? video.currentTime : playbackState.currentTime,
-          duration,
-        ),
+  const captureVideoProgressSnapshot = useCallback(
+    (element?: HTMLVideoElement | null): VideoProgressSnapshot | null => {
+      if (!isVideo || !activeItem) return null;
+      const candidate = element ?? videoRef.current;
+      const fallback = lastVideoProgressRef.current;
+      const fallbackDuration =
+        fallback?.mediaId === activeItem.id ? fallback.durationSeconds : 0;
+      const fallbackPosition =
+        fallback?.mediaId === activeItem.id ? fallback.positionSeconds : playbackState.currentTime;
+      const duration = resolvedVideoDuration(
+        activeItem.duration,
+        candidate?.duration ?? fallbackDuration,
       );
-      const completed = options?.completed === true;
+      if (!Number.isFinite(duration) || duration <= 0) return null;
+      const rawPosition =
+        candidate && Number.isFinite(candidate.currentTime) ? candidate.currentTime : fallbackPosition;
+      const positionSeconds = Math.max(0, Math.min(rawPosition, duration));
+      const ended = candidate?.ended ?? (fallback?.mediaId === activeItem.id ? fallback.ended : false);
+      return {
+        mediaId: activeItem.id,
+        positionSeconds,
+        durationSeconds: duration,
+        shouldResumePlayback:
+          candidate != null
+            ? !candidate.paused && !candidate.ended
+            : (fallback?.mediaId === activeItem.id ? fallback.shouldResumePlayback : false),
+        ended,
+      };
+    },
+    [activeItem, isVideo, playbackState.currentTime],
+  );
+
+  const syncVideoProgressSnapshot = useCallback(
+    (element: HTMLVideoElement | null) => {
+      const snapshot = captureVideoProgressSnapshot(element);
+      if (!snapshot) return;
+      lastVideoProgressRef.current = snapshot;
+    },
+    [captureVideoProgressSnapshot],
+  );
+
+  const primeVideoHandoff = useCallback(() => {
+    const snapshot = captureVideoProgressSnapshot(videoRef.current);
+    if (!snapshot) return null;
+    lastVideoProgressRef.current = snapshot;
+    seekToAfterReloadRef.current = snapshot.positionSeconds;
+    resumePlaybackAfterReloadRef.current = snapshot.shouldResumePlayback;
+    return snapshot;
+  }, [captureVideoProgressSnapshot]);
+
+  const persistPlaybackProgress = useCallback(
+    async (options?: { force?: boolean; completed?: boolean; snapshot?: VideoProgressSnapshot | null }) => {
+      if (!isVideo || !activeItem) return;
+      const snapshot =
+        options?.snapshot && options.snapshot.mediaId === activeItem.id
+          ? options.snapshot
+          : captureVideoProgressSnapshot();
+      if (!snapshot) return;
+      lastVideoProgressRef.current = snapshot;
+      const completed = options?.completed === true || snapshot.ended;
       const previous = lastPersistedRef.current;
       if (
         !options?.force &&
         previous?.mediaId === activeItem.id &&
         previous.completed === completed &&
-        Math.abs(previous.positionSeconds - positionSeconds) < 10
+        Math.abs(previous.positionSeconds - snapshot.positionSeconds) < 10
       ) {
         return;
       }
       await updateMediaProgress(activeItem.id, {
-        position_seconds: positionSeconds,
-        duration_seconds: duration,
+        position_seconds: snapshot.positionSeconds,
+        duration_seconds: snapshot.durationSeconds,
         completed,
       }).catch(() => {});
       lastPersistedRef.current = {
         mediaId: activeItem.id,
-        positionSeconds,
+        positionSeconds: snapshot.positionSeconds,
         completed,
       };
       if (activeItem.library_id != null) {
@@ -565,7 +626,7 @@ export function PlaybackDock() {
       }
       void queryClient.invalidateQueries({ queryKey: queryKeys.home });
     },
-    [activeItem, isVideo, playbackState.currentTime, queryClient],
+    [activeItem, captureVideoProgressSnapshot, isVideo, queryClient],
   );
 
   const applyResumePosition = useCallback(
@@ -590,29 +651,49 @@ export function PlaybackDock() {
     [activeItem, isVideo],
   );
 
-  const setVideoRef = useCallback(
-    (element: HTMLVideoElement | null) => {
-      if (videoRef.current !== element) {
-        manualSubtitleTrackRef.current = null;
-        manualSubtitleVideoRef.current = null;
-        setVideoAttachmentVersion((value) => value + 1);
-        setSubtitleAttachmentVersion((value) => value + 1);
-      }
-      videoRef.current = element;
-      registerMediaElementRef.current("video", element);
-      syncPlaybackStateRef.current(element);
+  const persistInitialPlaybackProgress = useCallback(
+    (element: HTMLVideoElement) => {
+      if (!isVideo || !activeItem) return;
+      if (initialProgressPersistedRef.current === activeItem.id) return;
+      if (!Number.isFinite(element.currentTime) || element.currentTime <= 0) return;
+      initialProgressPersistedRef.current = activeItem.id;
+      const snapshot = captureVideoProgressSnapshot(element);
+      void persistPlaybackProgress({ force: true, snapshot });
     },
-    [],
+    [activeItem, captureVideoProgressSnapshot, isVideo, persistPlaybackProgress],
   );
 
-  const setAudioRef = useCallback(
-    (element: HTMLAudioElement | null) => {
-      audioRef.current = element;
-      registerMediaElementRef.current("audio", element);
-      syncPlaybackStateRef.current(element);
-    },
-    [],
-  );
+  const setVideoRef = useCallback((element: HTMLVideoElement | null) => {
+    if (videoRef.current !== element) {
+      if (videoRef.current && !element) {
+        const snapshot = captureVideoProgressSnapshot(videoRef.current);
+        if (snapshot) {
+          lastVideoProgressRef.current = snapshot;
+          seekToAfterReloadRef.current = snapshot.positionSeconds;
+          resumePlaybackAfterReloadRef.current = snapshot.shouldResumePlayback;
+          if (snapshot.positionSeconds > 0 || snapshot.ended) {
+            void persistPlaybackProgress({ force: true, snapshot });
+          }
+        }
+      }
+      manualSubtitleTrackRef.current = null;
+      manualSubtitleVideoRef.current = null;
+      setVideoAttachmentVersion((value) => value + 1);
+      setSubtitleAttachmentVersion((value) => value + 1);
+    }
+    videoRef.current = element;
+    registerMediaElementRef.current("video", element);
+    syncPlaybackStateRef.current(element);
+    if (element) {
+      syncVideoProgressSnapshot(element);
+    }
+  }, [captureVideoProgressSnapshot, persistPlaybackProgress, syncVideoProgressSnapshot]);
+
+  const setAudioRef = useCallback((element: HTMLAudioElement | null) => {
+    audioRef.current = element;
+    registerMediaElementRef.current("audio", element);
+    syncPlaybackStateRef.current(element);
+  }, []);
 
   const handleVideoLoadedMetadata = useCallback(
     (element: HTMLVideoElement) => {
@@ -655,8 +736,10 @@ export function PlaybackDock() {
     setVideoAttachmentVersion(0);
     setSubtitleAttachmentVersion(0);
     setSubtitleReadyVersion(0);
+    initialProgressPersistedRef.current = null;
     resumeAppliedRef.current = null;
     defaultTrackSelectionAppliedRef.current = null;
+    lastVideoProgressRef.current = null;
     requestedAudioTrackRef.current =
       activeItemId != null ? { mediaId: activeItemId, key: "" } : null;
     dispatchedAudioTrackRef.current = null;
@@ -705,9 +788,7 @@ export function PlaybackDock() {
   useEffect(
     () =>
       subscribeToPlayerControlsAppearance((preference) => {
-        setPlayerControlsAppearance((current) =>
-          current === preference ? current : preference,
-        );
+        setPlayerControlsAppearance((current) => (current === preference ? current : preference));
       }),
     [],
   );
@@ -899,6 +980,7 @@ export function PlaybackDock() {
     const hls = new Hls({
       enableWorker: true,
       backBufferLength: 90,
+      startPosition: seekToAfterReloadRef.current !== null ? seekToAfterReloadRef.current : -1,
       xhrSetup: (xhr) => {
         xhr.withCredentials = true;
       },
@@ -1059,6 +1141,7 @@ export function PlaybackDock() {
           if (document.fullscreenElement === playerRootRef.current) {
             void document.exitFullscreen().catch(() => {});
           } else {
+            primeVideoHandoff();
             exitFullscreen();
           }
           break;
@@ -1106,6 +1189,7 @@ export function PlaybackDock() {
     isFullscreen,
     isVideo,
     muted,
+    primeVideoHandoff,
     resetHideTimer,
     seekTo,
     setMuted,
@@ -1130,6 +1214,25 @@ export function PlaybackDock() {
   const showDefaultControls = isVideo && playerControlsAppearance === "default";
   const playButtonLabel = playbackState.isPlaying ? "Pause" : "Play";
   const muteButtonLabel = muted || volume === 0 ? "Unmute" : "Mute";
+  const handleOpenFullscreen = () => {
+    const snapshot = primeVideoHandoff();
+    if (snapshot && (snapshot.positionSeconds > 0 || snapshot.ended)) {
+      void persistPlaybackProgress({ force: true, snapshot });
+    }
+    enterFullscreen();
+  };
+  const handleReturnToDocked = () => {
+    const snapshot = primeVideoHandoff();
+    if (snapshot && (snapshot.positionSeconds > 0 || snapshot.ended)) {
+      void persistPlaybackProgress({ force: true, snapshot });
+    }
+    exitFullscreen();
+  };
+  const handleClosePlayer = () => {
+    const snapshot = captureVideoProgressSnapshot(videoRef.current);
+    void persistPlaybackProgress({ force: true, snapshot });
+    dismissDock();
+  };
 
   /* ── Fullscreen video player ── */
   if (isFullscreen) {
@@ -1178,6 +1281,7 @@ export function PlaybackDock() {
           onCanPlay={(event) => {
             maybeRecoverInitialBufferGap(event.currentTarget);
             syncPlaybackState(event.currentTarget);
+            syncVideoProgressSnapshot(event.currentTarget);
             markSubtitleReady();
           }}
           onTimeUpdate={(event) => {
@@ -1185,6 +1289,8 @@ export function PlaybackDock() {
               initialBufferGapHandledRef.current = true;
             }
             syncPlaybackState(event.currentTarget);
+            syncVideoProgressSnapshot(event.currentTarget);
+            persistInitialPlaybackProgress(event.currentTarget);
           }}
           onPlay={(event) => {
             if (event.currentTarget.currentTime > 1) {
@@ -1192,17 +1298,25 @@ export function PlaybackDock() {
             }
             setHlsStatusMessage("");
             syncPlaybackState(event.currentTarget);
+            syncVideoProgressSnapshot(event.currentTarget);
+            persistInitialPlaybackProgress(event.currentTarget);
           }}
           onPause={(event) => {
             syncPlaybackState(event.currentTarget);
-            void persistPlaybackProgress({ force: true });
+            const snapshot = captureVideoProgressSnapshot(event.currentTarget);
+            void persistPlaybackProgress({ force: true, snapshot });
+          }}
+          onSeeked={(event) => {
+            syncPlaybackState(event.currentTarget);
+            syncVideoProgressSnapshot(event.currentTarget);
           }}
           onVolumeChange={(event) => syncPlaybackState(event.currentTarget)}
           onError={() => {
             setHlsStatusMessage("Stream error: browser media element failed to load playback");
           }}
-          onEnded={() => {
-            void persistPlaybackProgress({ force: true, completed: true });
+          onEnded={(event) => {
+            const snapshot = captureVideoProgressSnapshot(event.currentTarget);
+            void persistPlaybackProgress({ force: true, completed: true, snapshot });
           }}
         ></video>
 
@@ -1222,10 +1336,7 @@ export function PlaybackDock() {
           <button
             type="button"
             className="fullscreen-player__close-btn"
-            onClick={() => {
-              void persistPlaybackProgress({ force: true });
-              exitFullscreen();
-            }}
+            onClick={handleReturnToDocked}
             aria-label="Return to docked player"
             title="Return to docked player"
           >
@@ -1418,10 +1529,7 @@ export function PlaybackDock() {
               <button
                 type="button"
                 className={`fullscreen-player__ctrl-btn${showDefaultControls ? " fullscreen-player__ctrl-btn--labeled" : ""}`}
-                onClick={() => {
-                  void persistPlaybackProgress({ force: true });
-                  exitFullscreen();
-                }}
+                onClick={handleReturnToDocked}
                 aria-label="Return to docked player"
                 title="Return to docked player"
               >
@@ -1465,7 +1573,7 @@ export function PlaybackDock() {
               <button
                 type="button"
                 className="playback-dock__icon-button"
-                onClick={enterFullscreen}
+                onClick={handleOpenFullscreen}
                 aria-label="Open fullscreen player"
                 title="Open fullscreen player"
               >
@@ -1475,10 +1583,7 @@ export function PlaybackDock() {
             <button
               type="button"
               className="playback-dock__icon-button"
-              onClick={() => {
-                void persistPlaybackProgress({ force: true });
-                dismissDock();
-              }}
+              onClick={handleClosePlayer}
               aria-label="Close player"
               title="Close player"
             >
@@ -1613,14 +1718,14 @@ export function PlaybackDock() {
           {isVideo && (
             <div
               className="playback-dock__surface"
-              onClick={enterFullscreen}
+              onClick={handleOpenFullscreen}
               aria-label={`Open fullscreen player for ${activeItem.title}`}
               role="button"
               tabIndex={0}
               onKeyDown={(event) => {
                 if (event.key === "Enter" || event.key === " ") {
                   event.preventDefault();
-                  enterFullscreen();
+                  handleOpenFullscreen();
                 }
               }}
             >
@@ -1636,6 +1741,7 @@ export function PlaybackDock() {
                 onCanPlay={(event) => {
                   maybeRecoverInitialBufferGap(event.currentTarget);
                   syncPlaybackState(event.currentTarget);
+                  syncVideoProgressSnapshot(event.currentTarget);
                   markSubtitleReady();
                 }}
                 onTimeUpdate={(event) => {
@@ -1643,6 +1749,8 @@ export function PlaybackDock() {
                     initialBufferGapHandledRef.current = true;
                   }
                   syncPlaybackState(event.currentTarget);
+                  syncVideoProgressSnapshot(event.currentTarget);
+                  persistInitialPlaybackProgress(event.currentTarget);
                 }}
                 onPlay={(event) => {
                   if (event.currentTarget.currentTime > 1) {
@@ -1650,10 +1758,17 @@ export function PlaybackDock() {
                   }
                   setHlsStatusMessage("");
                   syncPlaybackState(event.currentTarget);
+                  syncVideoProgressSnapshot(event.currentTarget);
+                  persistInitialPlaybackProgress(event.currentTarget);
                 }}
                 onPause={(event) => {
                   syncPlaybackState(event.currentTarget);
-                  void persistPlaybackProgress({ force: true });
+                  const snapshot = captureVideoProgressSnapshot(event.currentTarget);
+                  void persistPlaybackProgress({ force: true, snapshot });
+                }}
+                onSeeked={(event) => {
+                  syncPlaybackState(event.currentTarget);
+                  syncVideoProgressSnapshot(event.currentTarget);
                 }}
                 onVolumeChange={(event) => syncPlaybackState(event.currentTarget)}
                 onError={() => {
@@ -1661,8 +1776,9 @@ export function PlaybackDock() {
                     "Stream error: browser media element failed to load playback",
                   );
                 }}
-                onEnded={() => {
-                  void persistPlaybackProgress({ force: true, completed: true });
+                onEnded={(event) => {
+                  const snapshot = captureVideoProgressSnapshot(event.currentTarget);
+                  void persistPlaybackProgress({ force: true, completed: true, snapshot });
                 }}
               ></video>
               <button
@@ -1672,7 +1788,7 @@ export function PlaybackDock() {
                 title="Enter true fullscreen"
                 onClick={(event) => {
                   event.stopPropagation();
-                  enterFullscreen();
+                  handleOpenFullscreen();
                   setPendingBrowserFullscreen(true);
                 }}
               >
