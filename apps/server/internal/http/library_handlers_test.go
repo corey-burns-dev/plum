@@ -1235,6 +1235,83 @@ func TestListLibraryMedia_EmbeddedSubtitlesUseCamelCaseStreamIndex(t *testing.T)
 	}
 }
 
+func TestListLibraryMedia_IncludesIdentifyStateOverlay(t *testing.T) {
+	dbConn, err := db.InitDB(":memory:")
+	if err != nil {
+		t.Fatalf("init db: %v", err)
+	}
+	t.Cleanup(func() { _ = dbConn.Close() })
+
+	now := time.Now().UTC()
+	var userID int
+	if err := dbConn.QueryRow(
+		`INSERT INTO users (email, password_hash, is_admin, created_at) VALUES (?, ?, 1, ?) RETURNING id`,
+		"identify@test.com",
+		"hash",
+		now,
+	).Scan(&userID); err != nil {
+		t.Fatalf("insert user: %v", err)
+	}
+	var libraryID int
+	if err := dbConn.QueryRow(
+		`INSERT INTO libraries (user_id, name, type, path, created_at) VALUES (?, ?, ?, ?, ?) RETURNING id`,
+		userID,
+		"Movies",
+		db.LibraryTypeMovie,
+		"/movies",
+		now,
+	).Scan(&libraryID); err != nil {
+		t.Fatalf("insert library: %v", err)
+	}
+	var movieID int
+	moviePath := "/movies/Queued Movie (2025)/Queued Movie.mkv"
+	if err := dbConn.QueryRow(
+		`INSERT INTO movies (library_id, title, path, duration, match_status) VALUES (?, ?, ?, ?, ?) RETURNING id`,
+		libraryID,
+		"Queued Movie",
+		moviePath,
+		0,
+		db.MatchStatusLocal,
+	).Scan(&movieID); err != nil {
+		t.Fatalf("insert movie: %v", err)
+	}
+	if _, err := dbConn.Exec(`INSERT INTO media_global (kind, ref_id) VALUES (?, ?)`, db.LibraryTypeMovie, movieID); err != nil {
+		t.Fatalf("insert media global row: %v", err)
+	}
+
+	tracker := newIdentifyRunTracker()
+	tracker.startLibrary(libraryID, []db.IdentificationRow{{
+		RefID: movieID,
+		Kind:  db.LibraryTypeMovie,
+		Path:  moviePath,
+	}})
+	tracker.setState(libraryID, db.LibraryTypeMovie, moviePath, "identifying")
+
+	handler := &LibraryHandler{DB: dbConn, identifyRun: tracker}
+	req := httptest.NewRequest(http.MethodGet, "/api/libraries/"+strconv.Itoa(libraryID)+"/media", nil)
+	rctx := chi.NewRouteContext()
+	rctx.URLParams.Add("id", strconv.Itoa(libraryID))
+	req = req.WithContext(context.WithValue(withUser(req.Context(), &db.User{ID: userID, IsAdmin: true}), chi.RouteCtxKey, rctx))
+	rec := httptest.NewRecorder()
+
+	handler.ListLibraryMedia(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d body=%s", rec.Code, rec.Body.String())
+	}
+
+	var payload []map[string]any
+	if err := json.NewDecoder(rec.Body).Decode(&payload); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if len(payload) != 1 {
+		t.Fatalf("expected 1 media item, got %d", len(payload))
+	}
+	if got := payload[0]["identify_state"]; got != "identifying" {
+		t.Fatalf("identify_state = %#v", got)
+	}
+}
+
 func TestListLibraryMedia_EmbeddedAudioTracksUseCamelCaseStreamIndex(t *testing.T) {
 	dbConn, err := db.InitDB(":memory:")
 	if err != nil {

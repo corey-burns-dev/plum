@@ -33,6 +33,14 @@ export const MatchStatusSchema = Schema.Literals([
   "unmatched",
 ]);
 
+export type IdentifyState = "queued" | "identifying" | "failed";
+
+export const IdentifyStateSchema = Schema.Literals([
+  "queued",
+  "identifying",
+  "failed",
+]);
+
 export interface Subtitle {
   id: number;
   title: string;
@@ -79,6 +87,7 @@ export interface MediaItem {
   duration: number;
   type: MediaType;
   match_status?: MatchStatus;
+  identify_state?: IdentifyState;
   subtitles?: Subtitle[];
   embeddedSubtitles?: EmbeddedSubtitle[];
   embeddedAudioTracks?: EmbeddedAudioTrack[];
@@ -118,6 +127,7 @@ export const MediaItemSchema = Schema.Struct({
   duration: Schema.Number,
   type: MediaTypeSchema,
   match_status: Schema.optional(MatchStatusSchema),
+  identify_state: Schema.optional(IdentifyStateSchema),
   subtitles: Schema.optional(Schema.Array(SubtitleSchema)),
   embeddedSubtitles: Schema.optional(Schema.Array(EmbeddedSubtitleSchema)),
   embeddedAudioTracks: Schema.optional(Schema.Array(EmbeddedAudioTrackSchema)),

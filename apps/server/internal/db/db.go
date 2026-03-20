@@ -88,6 +88,7 @@ type MediaItem struct {
 	Duration            int                  `json:"duration"`
 	Type                string               `json:"type"`
 	MatchStatus         string               `json:"match_status,omitempty"`
+	IdentifyState       string               `json:"identify_state,omitempty"`
 	Subtitles           []Subtitle           `json:"subtitles"`
 	EmbeddedSubtitles   []EmbeddedSubtitle   `json:"embeddedSubtitles"`
 	EmbeddedAudioTracks []EmbeddedAudioTrack `json:"embeddedAudioTracks"`

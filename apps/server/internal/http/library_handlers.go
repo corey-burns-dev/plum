@@ -7,6 +7,7 @@ import (
 	"log"
 	"net/http"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -24,6 +25,119 @@ type LibraryHandler struct {
 	Series      metadata.SeriesDetailsProvider
 	SeriesQuery metadata.SeriesSearchProvider
 	ScanJobs    *LibraryScanManager
+	identifyRun *identifyRunTracker
+}
+
+type identifyRunTracker struct {
+	mu      sync.RWMutex
+	byLibID map[int]map[string]string
+}
+
+func newIdentifyRunTracker() *identifyRunTracker {
+	return &identifyRunTracker{
+		byLibID: make(map[int]map[string]string),
+	}
+}
+
+func identifyRowKey(kind, path string) string {
+	return kind + ":" + path
+}
+
+func (t *identifyRunTracker) startLibrary(libraryID int, rows []db.IdentificationRow) {
+	if t == nil {
+		return
+	}
+	states := make(map[string]string, len(rows))
+	for _, row := range rows {
+		states[identifyRowKey(row.Kind, row.Path)] = "queued"
+	}
+	t.mu.Lock()
+	t.byLibID[libraryID] = states
+	t.mu.Unlock()
+}
+
+func (t *identifyRunTracker) setState(libraryID int, kind, path, state string) {
+	if t == nil {
+		return
+	}
+	key := identifyRowKey(kind, path)
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	states, ok := t.byLibID[libraryID]
+	if !ok {
+		return
+	}
+	if state == "" {
+		delete(states, key)
+		return
+	}
+	states[key] = state
+}
+
+func (t *identifyRunTracker) failRows(libraryID int, rows []db.IdentificationRow) {
+	if t == nil {
+		return
+	}
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	states, ok := t.byLibID[libraryID]
+	if !ok {
+		return
+	}
+	for _, row := range rows {
+		states[identifyRowKey(row.Kind, row.Path)] = "failed"
+	}
+}
+
+func (t *identifyRunTracker) finishLibrary(libraryID int) {
+	if t == nil {
+		return
+	}
+	t.mu.Lock()
+	states := t.byLibID[libraryID]
+	if len(states) == 0 {
+		delete(t.byLibID, libraryID)
+		t.mu.Unlock()
+		return
+	}
+	failedOnly := make(map[string]string)
+	for key, value := range states {
+		if value == "failed" {
+			failedOnly[key] = value
+		}
+	}
+	if len(failedOnly) == 0 {
+		delete(t.byLibID, libraryID)
+	} else {
+		t.byLibID[libraryID] = failedOnly
+	}
+	t.mu.Unlock()
+}
+
+func (t *identifyRunTracker) stateForLibrary(libraryID int) map[string]string {
+	if t == nil {
+		return nil
+	}
+	t.mu.RLock()
+	defer t.mu.RUnlock()
+	states := t.byLibID[libraryID]
+	if len(states) == 0 {
+		return nil
+	}
+	out := make(map[string]string, len(states))
+	for key, value := range states {
+		out[key] = value
+	}
+	return out
+}
+
+func (t *identifyRunTracker) clearLibrary(libraryID int) {
+	if t == nil {
+		return
+	}
+	t.mu.Lock()
+	delete(t.byLibID, libraryID)
+	t.mu.Unlock()
 }
 
 type createLibraryRequest struct {
@@ -399,8 +513,15 @@ func (h *LibraryHandler) identifyLibrary(ctx context.Context, libraryID int) (id
 		return identifyResult{}, err
 	}
 	if len(rows) == 0 {
+		h.identifyRun.clearLibrary(libraryID)
 		return identifyResult{Identified: 0, Failed: 0}, nil
 	}
+	if h.identifyRun == nil {
+		h.identifyRun = newIdentifyRunTracker()
+	}
+	h.identifyRun.startLibrary(libraryID, rows)
+	defer h.identifyRun.finishLibrary(libraryID)
+
 	var libraryPath string
 	_ = h.DB.QueryRow(`SELECT path FROM libraries WHERE id = ?`, libraryID).Scan(&libraryPath)
 	identified, failed := 0, 0
@@ -408,11 +529,12 @@ func (h *LibraryHandler) identifyLibrary(ctx context.Context, libraryID int) (id
 	for _, row := range rows {
 		initialJobs = append(initialJobs, identifyJob{row: row})
 	}
-	initialIdentified, retryJobs, initialFailed := h.runIdentifyJobs(ctx, libraryPath, initialJobs)
-	retryIdentified, _, retryFailed := h.runIdentifyJobs(ctx, libraryPath, retryJobs)
+	sortIdentifyJobs(initialJobs, libraryPath)
+	initialIdentified, retryJobs, initialFailed := h.runIdentifyJobs(ctx, libraryID, libraryPath, initialJobs)
+	retryIdentified, _, retryFailed := h.runIdentifyJobs(ctx, libraryID, libraryPath, retryJobs)
 	identified += initialIdentified + retryIdentified
 
-	fallbackIdentified, fallbackFailed := h.identifyAnimeFallbacks(ctx, libraryPath, append(initialFailed, retryFailed...))
+	fallbackIdentified, fallbackFailed := h.identifyAnimeFallbacks(ctx, libraryID, libraryPath, append(initialFailed, retryFailed...))
 	identified += fallbackIdentified
 	failed += fallbackFailed
 
@@ -421,6 +543,7 @@ func (h *LibraryHandler) identifyLibrary(ctx context.Context, libraryID int) (id
 
 func (h *LibraryHandler) runIdentifyJobs(
 	ctx context.Context,
+	libraryID int,
 	libraryPath string,
 	jobsToRun []identifyJob,
 ) (identified int, retryJobs []identifyJob, failed []identifyJobResult) {
@@ -452,7 +575,7 @@ func (h *LibraryHandler) runIdentifyJobs(
 					if !ok {
 						return
 					}
-					results <- h.identifyLibraryJob(ctx, job, libraryPath, rateLimiter)
+					results <- h.identifyLibraryJob(ctx, libraryID, job, libraryPath, rateLimiter)
 				}
 			}
 		}()
@@ -497,6 +620,7 @@ type animeFallbackGroup struct {
 
 func (h *LibraryHandler) identifyAnimeFallbacks(
 	ctx context.Context,
+	libraryID int,
 	libraryPath string,
 	failedResults []identifyJobResult,
 ) (identified int, failed int) {
@@ -507,11 +631,13 @@ func (h *LibraryHandler) identifyAnimeFallbacks(
 	groups := make(map[string]*animeFallbackGroup)
 	for _, result := range failedResults {
 		if !result.fallbackEligible {
+			h.identifyRun.setState(libraryID, result.job.row.Kind, result.job.row.Path, "failed")
 			failed++
 			continue
 		}
 		queries := animeFallbackQueries(result.job.row, libraryPath)
 		if len(queries) == 0 {
+			h.identifyRun.setState(libraryID, result.job.row.Kind, result.job.row.Path, "failed")
 			failed++
 			continue
 		}
@@ -527,9 +653,13 @@ func (h *LibraryHandler) identifyAnimeFallbacks(
 	for _, group := range groups {
 		updated, err := h.identifyAnimeFallbackGroup(ctx, group.queries, group.rows)
 		if err != nil || updated != len(group.rows) {
+			h.identifyRun.failRows(libraryID, group.rows[updated:])
 			identified += updated
 			failed += len(group.rows) - updated
 			continue
+		}
+		for _, row := range group.rows {
+			h.identifyRun.setState(libraryID, row.Kind, row.Path, "")
 		}
 		identified += updated
 	}
@@ -567,10 +697,12 @@ func identifyTimeoutForAttempt(attempt int) time.Duration {
 
 func (h *LibraryHandler) identifyLibraryJob(
 	ctx context.Context,
+	libraryID int,
 	job identifyJob,
 	libraryPath string,
 	rateLimiter <-chan struct{},
 ) identifyJobResult {
+	h.identifyRun.setState(libraryID, job.row.Kind, job.row.Path, "identifying")
 	select {
 	case <-ctx.Done():
 		return identifyJobResult{job: job}
@@ -605,6 +737,7 @@ func (h *LibraryHandler) identifyLibraryJob(
 	}
 	if res == nil {
 		if job.attempt == 0 {
+			h.identifyRun.setState(libraryID, row.Kind, row.Path, "queued")
 			return identifyJobResult{status: identifyJobRetry, job: job}
 		}
 		return identifyJobResult{
@@ -626,6 +759,7 @@ func (h *LibraryHandler) identifyLibraryJob(
 	if err := db.UpdateMediaMetadata(h.DB, tbl, row.RefID, res.Title, res.Overview, res.PosterURL, res.BackdropURL, res.ReleaseDate, res.VoteAverage, res.IMDbID, res.IMDbRating, tmdbID, tvdbID, row.Season, row.Episode); err != nil {
 		return identifyJobResult{status: identifyJobFailed, job: job}
 	}
+	h.identifyRun.setState(libraryID, row.Kind, row.Path, "")
 	return identifyJobResult{status: identifyJobSucceeded, job: job}
 }
 
@@ -751,6 +885,58 @@ func identifyMediaInfo(row db.IdentificationRow, libraryPath string) metadata.Me
 		return info
 	default:
 		return metadata.ParseFilename(base)
+	}
+}
+
+func sortIdentifyJobs(jobs []identifyJob, libraryPath string) {
+	sort.SliceStable(jobs, func(i, j int) bool {
+		a := identifyJobPriority(jobs[i], libraryPath)
+		b := identifyJobPriority(jobs[j], libraryPath)
+		if a != b {
+			return a < b
+		}
+		if jobs[i].row.Kind != jobs[j].row.Kind {
+			return jobs[i].row.Kind < jobs[j].row.Kind
+		}
+		if jobs[i].row.Season != jobs[j].row.Season {
+			return jobs[i].row.Season < jobs[j].row.Season
+		}
+		if jobs[i].row.Episode != jobs[j].row.Episode {
+			return jobs[i].row.Episode < jobs[j].row.Episode
+		}
+		return jobs[i].row.Path < jobs[j].row.Path
+	})
+}
+
+func identifyJobPriority(job identifyJob, libraryPath string) int {
+	info := identifyMediaInfo(job.row, libraryPath)
+	switch job.row.Kind {
+	case db.LibraryTypeMovie:
+		if info.TMDBID > 0 || info.TVDBID != "" {
+			return 0
+		}
+		if info.Year > 0 {
+			return 1
+		}
+		return 2
+	case db.LibraryTypeTV, db.LibraryTypeAnime:
+		season := info.Season
+		if season == 0 {
+			season = job.row.Season
+		}
+		episode := info.Episode
+		if episode == 0 {
+			episode = job.row.Episode
+		}
+		if (season == 1 || season == 0) && episode == 1 {
+			return 0
+		}
+		if episode > 0 && episode <= 3 {
+			return 1
+		}
+		return 2
+	default:
+		return 3
 	}
 }
 
@@ -899,6 +1085,13 @@ func (h *LibraryHandler) ListLibraryMedia(w http.ResponseWriter, r *http.Request
 	if err != nil {
 		http.Error(w, "internal error", http.StatusInternalServerError)
 		return
+	}
+	if identifyStates := h.identifyRun.stateForLibrary(libraryID); len(identifyStates) > 0 {
+		for i := range items {
+			if state, ok := identifyStates[identifyRowKey(items[i].Type, items[i].Path)]; ok {
+				items[i].IdentifyState = state
+			}
+		}
 	}
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(items)
