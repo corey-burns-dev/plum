@@ -213,7 +213,11 @@ function PlayerSettingsMenu({
 
       <div className="player-settings-menu__field">
         <span>Controls look</span>
-        <div className="player-settings-menu__choice-row" role="group" aria-label="Player controls look">
+        <div
+          className="player-settings-menu__choice-row"
+          role="group"
+          aria-label="Player controls look"
+        >
           {playerControlsAppearanceOptions.map((option) => (
             <button
               key={option.value}
@@ -243,6 +247,7 @@ export function PlaybackDock() {
     positionSeconds: number;
     completed: boolean;
   } | null>(null);
+  const initialProgressPersistedRef = useRef<number | null>(null);
   const resumeAppliedRef = useRef<number | null>(null);
   const defaultTrackSelectionAppliedRef = useRef<number | null>(null);
   const [playbackState, setPlaybackState] = useState<PlaybackState>({
@@ -253,9 +258,8 @@ export function PlaybackDock() {
   const [subtitleAppearance, setSubtitleAppearance] = useState<SubtitleAppearance>(() =>
     readStoredSubtitleAppearance(),
   );
-  const [playerControlsAppearance, setPlayerControlsAppearance] = useState<PlayerControlsAppearance>(
-    () => readStoredPlayerControlsAppearance(),
-  );
+  const [playerControlsAppearance, setPlayerControlsAppearance] =
+    useState<PlayerControlsAppearance>(() => readStoredPlayerControlsAppearance());
   const [selectedSubtitleKey, setSelectedSubtitleKey] = useState("off");
   const [loadedSubtitleTracks, setLoadedSubtitleTracks] = useState<LoadedSubtitleTrack[]>([]);
   const [failedSubtitleKeys, setFailedSubtitleKeys] = useState<string[]>([]);
@@ -416,7 +420,10 @@ export function PlaybackDock() {
             : [...current, { ...track, body }],
         );
       } catch (error) {
-        if ((error instanceof DOMException && error.name === "AbortError") || controller.signal.aborted) {
+        if (
+          (error instanceof DOMException && error.name === "AbortError") ||
+          controller.signal.aborted
+        ) {
           return;
         }
         console.error("[PlaybackDock] Subtitle load failed", {
@@ -590,29 +597,34 @@ export function PlaybackDock() {
     [activeItem, isVideo],
   );
 
-  const setVideoRef = useCallback(
-    (element: HTMLVideoElement | null) => {
-      if (videoRef.current !== element) {
-        manualSubtitleTrackRef.current = null;
-        manualSubtitleVideoRef.current = null;
-        setVideoAttachmentVersion((value) => value + 1);
-        setSubtitleAttachmentVersion((value) => value + 1);
-      }
-      videoRef.current = element;
-      registerMediaElementRef.current("video", element);
-      syncPlaybackStateRef.current(element);
+  const persistInitialPlaybackProgress = useCallback(
+    (element: HTMLVideoElement) => {
+      if (!isVideo || !activeItem) return;
+      if (initialProgressPersistedRef.current === activeItem.id) return;
+      if (!Number.isFinite(element.currentTime) || element.currentTime <= 0) return;
+      initialProgressPersistedRef.current = activeItem.id;
+      void persistPlaybackProgress({ force: true });
     },
-    [],
+    [activeItem, isVideo, persistPlaybackProgress],
   );
 
-  const setAudioRef = useCallback(
-    (element: HTMLAudioElement | null) => {
-      audioRef.current = element;
-      registerMediaElementRef.current("audio", element);
-      syncPlaybackStateRef.current(element);
-    },
-    [],
-  );
+  const setVideoRef = useCallback((element: HTMLVideoElement | null) => {
+    if (videoRef.current !== element) {
+      manualSubtitleTrackRef.current = null;
+      manualSubtitleVideoRef.current = null;
+      setVideoAttachmentVersion((value) => value + 1);
+      setSubtitleAttachmentVersion((value) => value + 1);
+    }
+    videoRef.current = element;
+    registerMediaElementRef.current("video", element);
+    syncPlaybackStateRef.current(element);
+  }, []);
+
+  const setAudioRef = useCallback((element: HTMLAudioElement | null) => {
+    audioRef.current = element;
+    registerMediaElementRef.current("audio", element);
+    syncPlaybackStateRef.current(element);
+  }, []);
 
   const handleVideoLoadedMetadata = useCallback(
     (element: HTMLVideoElement) => {
@@ -655,6 +667,7 @@ export function PlaybackDock() {
     setVideoAttachmentVersion(0);
     setSubtitleAttachmentVersion(0);
     setSubtitleReadyVersion(0);
+    initialProgressPersistedRef.current = null;
     resumeAppliedRef.current = null;
     defaultTrackSelectionAppliedRef.current = null;
     requestedAudioTrackRef.current =
@@ -705,9 +718,7 @@ export function PlaybackDock() {
   useEffect(
     () =>
       subscribeToPlayerControlsAppearance((preference) => {
-        setPlayerControlsAppearance((current) =>
-          current === preference ? current : preference,
-        );
+        setPlayerControlsAppearance((current) => (current === preference ? current : preference));
       }),
     [],
   );
@@ -1185,6 +1196,7 @@ export function PlaybackDock() {
               initialBufferGapHandledRef.current = true;
             }
             syncPlaybackState(event.currentTarget);
+            persistInitialPlaybackProgress(event.currentTarget);
           }}
           onPlay={(event) => {
             if (event.currentTarget.currentTime > 1) {
@@ -1192,6 +1204,7 @@ export function PlaybackDock() {
             }
             setHlsStatusMessage("");
             syncPlaybackState(event.currentTarget);
+            persistInitialPlaybackProgress(event.currentTarget);
           }}
           onPause={(event) => {
             syncPlaybackState(event.currentTarget);
@@ -1643,6 +1656,7 @@ export function PlaybackDock() {
                     initialBufferGapHandledRef.current = true;
                   }
                   syncPlaybackState(event.currentTarget);
+                  persistInitialPlaybackProgress(event.currentTarget);
                 }}
                 onPlay={(event) => {
                   if (event.currentTarget.currentTime > 1) {
@@ -1650,6 +1664,7 @@ export function PlaybackDock() {
                   }
                   setHlsStatusMessage("");
                   syncPlaybackState(event.currentTarget);
+                  persistInitialPlaybackProgress(event.currentTarget);
                 }}
                 onPause={(event) => {
                   syncPlaybackState(event.currentTarget);

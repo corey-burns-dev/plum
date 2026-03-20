@@ -139,7 +139,10 @@ describe("App library and player wiring", () => {
     }));
     vi.spyOn(api, "identifyLibrary").mockResolvedValue({ identified: 0, failed: 0 });
     vi.spyOn(api, "confirmShow").mockResolvedValue({ updated: 1 });
-    vi.spyOn(api, "getHomeDashboard").mockResolvedValue({ continueWatching: [] });
+    vi.spyOn(api, "getHomeDashboard").mockResolvedValue({
+      continueWatching: [],
+      recentlyAdded: [],
+    });
     vi.spyOn(api, "createPlaybackSession").mockImplementation(async (mediaId, payload) => ({
       sessionId: `session-${mediaId}`,
       mediaId,
@@ -271,6 +274,7 @@ describe("App library and player wiring", () => {
           },
         },
       ],
+      recentlyAdded: [],
     });
 
     renderApp();
@@ -280,6 +284,60 @@ describe("App library and player wiring", () => {
 
     await waitFor(() => {
       expect(api.createPlaybackSession).toHaveBeenCalledWith(55, expect.anything());
+    });
+  });
+
+  it("renders recently added items on the dashboard and plays them directly", async () => {
+    window.history.pushState({}, "", "/");
+    vi.spyOn(api, "listLibraries").mockResolvedValue([
+      { id: 1, name: "TV", type: "tv", path: "/tv", user_id: 1 },
+      { id: 2, name: "Movies", type: "movie", path: "/movies", user_id: 1 },
+    ]);
+    vi.spyOn(api, "getHomeDashboard").mockResolvedValue({
+      continueWatching: [],
+      recentlyAdded: [
+        {
+          kind: "show",
+          show_title: "Space Show",
+          show_key: "tmdb-101",
+          episode_label: "S02E04",
+          media: {
+            id: 55,
+            library_id: 1,
+            title: "Space Show - S02E04 - Echoes",
+            path: "/tv/Space Show/S02E04.mkv",
+            duration: 1800,
+            type: "tv",
+            season: 2,
+            episode: 4,
+          },
+        },
+        {
+          kind: "movie",
+          media: {
+            id: 99,
+            library_id: 2,
+            title: "Die My Love",
+            path: "/movies/Die My Love (2025)/Die My Love.mp4",
+            duration: 7200,
+            type: "movie",
+            release_date: "2025-01-01",
+            poster_path: "/poster.jpg",
+          },
+        },
+      ],
+    });
+
+    renderApp();
+
+    expect(await screen.findByText("Recently added")).toBeTruthy();
+    expect(await screen.findByRole("button", { name: /^Space Show$/i })).toBeTruthy();
+    expect(await screen.findByRole("button", { name: /^Die My Love$/i })).toBeTruthy();
+
+    fireEvent.click(screen.getByRole("button", { name: /^Die My Love$/i }));
+
+    await waitFor(() => {
+      expect(api.createPlaybackSession).toHaveBeenCalledWith(99, expect.anything());
     });
   });
 

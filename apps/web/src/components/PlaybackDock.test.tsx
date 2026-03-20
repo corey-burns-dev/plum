@@ -215,6 +215,31 @@ describe("PlaybackDock audio track selection", () => {
     );
   });
 
+  it("persists initial playback progress before the periodic interval elapses", async () => {
+    const { container } = renderDock();
+    const video = container.querySelector("video") as HTMLVideoElement | null;
+    expect(video).toBeTruthy();
+    if (!video) {
+      throw new Error("Expected a video element");
+    }
+
+    Object.defineProperty(video, "currentTime", {
+      configurable: true,
+      value: 3,
+      writable: true,
+    });
+
+    fireEvent.timeUpdate(video);
+
+    await waitFor(() => {
+      expect(api.updateMediaProgress).toHaveBeenCalledWith(42, {
+        position_seconds: 3,
+        duration_seconds: 120,
+        completed: false,
+      });
+    });
+  });
+
   it("keeps the active HLS attachment when mute state rerenders the player", async () => {
     const { queryClient, rerender } = renderDock();
 
@@ -459,9 +484,11 @@ describe("PlaybackDock audio track selection", () => {
       },
     });
 
-    const fetchSpy = vi.spyOn(globalThis, "fetch").mockResolvedValue(
-      new Response("WEBVTT\n\n00:00:00.000 --> 00:00:02.000\nHello world\n", { status: 200 }),
-    );
+    const fetchSpy = vi
+      .spyOn(globalThis, "fetch")
+      .mockResolvedValue(
+        new Response("WEBVTT\n\n00:00:00.000 --> 00:00:02.000\nHello world\n", { status: 200 }),
+      );
 
     mockUsePlayer.mockReturnValue({
       ...mockUsePlayer.mock.results.at(-1)?.value,
@@ -522,7 +549,11 @@ describe("PlaybackDock audio track selection", () => {
         });
       }
       if (originalTextTracksDescriptor) {
-        Object.defineProperty(HTMLMediaElement.prototype, "textTracks", originalTextTracksDescriptor);
+        Object.defineProperty(
+          HTMLMediaElement.prototype,
+          "textTracks",
+          originalTextTracksDescriptor,
+        );
       } else {
         Reflect.deleteProperty(
           HTMLMediaElement.prototype as HTMLMediaElement & { textTracks?: TextTrackList },

@@ -54,6 +54,10 @@ function cloneHomeDashboard(dashboard: HomeDashboardResult): HomeDashboard {
       ...entry,
       media: cloneMediaItem(entry.media),
     })),
+    recentlyAdded: (dashboard.recentlyAdded ?? []).map((entry) => ({
+      ...entry,
+      media: cloneMediaItem(entry.media),
+    })),
   };
 }
 
@@ -89,7 +93,9 @@ export function useLibraries(): UseQueryResult<Library[], Error> {
   });
 }
 
-export function useHomeDashboard(options?: { enabled?: boolean }): UseQueryResult<HomeDashboard, Error> {
+export function useHomeDashboard(options?: {
+  enabled?: boolean;
+}): UseQueryResult<HomeDashboard, Error> {
   return useQuery({
     queryKey: queryKeys.home,
     queryFn: async () => cloneHomeDashboard(await getHomeDashboard()),
@@ -150,10 +156,12 @@ export function useUpdateLibraryPlaybackPreferences(): UseMutationResult<
   return useMutation({
     mutationFn: ({ libraryId, payload }) => updateLibraryPlaybackPreferences(libraryId, payload),
     onSuccess: (library) => {
-      queryClient.setQueryData<Library[]>(queryKeys.libraries, (current) =>
-        current?.map((item) => (item.id === library.id ? { ...item, ...library } : item)) ?? [
-          cloneLibrary(library),
-        ],
+      queryClient.setQueryData<Library[]>(
+        queryKeys.libraries,
+        (current) =>
+          current?.map((item) => (item.id === library.id ? { ...item, ...library } : item)) ?? [
+            cloneLibrary(library),
+          ],
       );
     },
   });
@@ -219,7 +227,8 @@ export function useUpdateTranscodingSettings(): UseMutationResult<
 > {
   const queryClient = useQueryClient();
   return useMutation({
-    mutationFn: async (settings) => cloneTranscodingSettingsResponse(await updateTranscodingSettings(settings)),
+    mutationFn: async (settings) =>
+      cloneTranscodingSettingsResponse(await updateTranscodingSettings(settings)),
     onSuccess: (data) => {
       queryClient.setQueryData(queryKeys.transcodingSettings, data);
     },

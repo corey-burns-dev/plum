@@ -6,40 +6,22 @@ import { Schema } from "effect";
  */
 export type LibraryType = "tv" | "movie" | "music" | "anime";
 
-export const LibraryTypeSchema = Schema.Literals([
-  "tv",
-  "movie",
-  "music",
-  "anime",
-]);
+export const LibraryTypeSchema = Schema.Literals(["tv", "movie", "music", "anime"]);
 
 /**
  * Media item type stored per item; matches library type for identification.
  */
 export type MediaType = "tv" | "movie" | "music" | "anime";
 
-export const MediaTypeSchema = Schema.Literals([
-  "tv",
-  "movie",
-  "music",
-  "anime",
-]);
+export const MediaTypeSchema = Schema.Literals(["tv", "movie", "music", "anime"]);
 
 export type MatchStatus = "identified" | "local" | "unmatched";
 
-export const MatchStatusSchema = Schema.Literals([
-  "identified",
-  "local",
-  "unmatched",
-]);
+export const MatchStatusSchema = Schema.Literals(["identified", "local", "unmatched"]);
 
 export type IdentifyState = "queued" | "identifying" | "failed";
 
-export const IdentifyStateSchema = Schema.Literals([
-  "queued",
-  "identifying",
-  "failed",
-]);
+export const IdentifyStateSchema = Schema.Literals(["queued", "identifying", "failed"]);
 
 export interface Subtitle {
   id: number;
@@ -234,12 +216,30 @@ export const ContinueWatchingEntrySchema = Schema.Struct({
   remaining_seconds: Schema.Number,
 });
 
+export interface RecentlyAddedEntry {
+  kind: "movie" | "show";
+  media: MediaItem;
+  show_key?: string;
+  show_title?: string;
+  episode_label?: string;
+}
+
+export const RecentlyAddedEntrySchema = Schema.Struct({
+  kind: Schema.Literals(["movie", "show"]),
+  media: MediaItemSchema,
+  show_key: Schema.optional(Schema.String),
+  show_title: Schema.optional(Schema.String),
+  episode_label: Schema.optional(Schema.String),
+});
+
 export interface HomeDashboard {
   continueWatching: ContinueWatchingEntry[];
+  recentlyAdded?: RecentlyAddedEntry[];
 }
 
 export const HomeDashboardSchema = Schema.Struct({
   continueWatching: Schema.Array(ContinueWatchingEntrySchema),
+  recentlyAdded: Schema.optional(Schema.Array(RecentlyAddedEntrySchema)),
 });
 
 export interface Library {
@@ -334,12 +334,7 @@ export const ScanLibraryResultSchema = Schema.Struct({
   skipped: Schema.Number,
 });
 
-export type LibraryScanPhase =
-  | "idle"
-  | "queued"
-  | "scanning"
-  | "completed"
-  | "failed";
+export type LibraryScanPhase = "idle" | "queued" | "scanning" | "completed" | "failed";
 
 export const LibraryScanPhaseSchema = Schema.Literals([
   "idle",
@@ -349,12 +344,7 @@ export const LibraryScanPhaseSchema = Schema.Literals([
   "failed",
 ]);
 
-export type LibraryIdentifyPhase =
-  | "idle"
-  | "queued"
-  | "identifying"
-  | "completed"
-  | "failed";
+export type LibraryIdentifyPhase = "idle" | "queued" | "identifying" | "completed" | "failed";
 
 export const LibraryIdentifyPhaseSchema = Schema.Literals([
   "idle",
@@ -519,11 +509,7 @@ export const VaapiDecodeCodecSchema = Schema.Literals([
 
 export type HardwareEncodeFormat = "h264" | "hevc" | "av1";
 
-export const HardwareEncodeFormatSchema = Schema.Literals([
-  "h264",
-  "hevc",
-  "av1",
-]);
+export const HardwareEncodeFormatSchema = Schema.Literals(["h264", "hevc", "av1"]);
 
 export interface TranscodingSettings {
   vaapiEnabled: boolean;
@@ -636,9 +622,7 @@ export type PlumWebSocketEvent =
   | PlaybackSessionUpdateEvent
   | LibraryScanUpdateEvent;
 
-export type PlumWebSocketCommand =
-  | AttachPlaybackSessionCommand
-  | DetachPlaybackSessionCommand;
+export type PlumWebSocketCommand = AttachPlaybackSessionCommand | DetachPlaybackSessionCommand;
 
 export const WelcomeEventSchema = Schema.Struct({
   type: Schema.Literal("welcome"),
