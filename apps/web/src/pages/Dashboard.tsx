@@ -12,7 +12,6 @@ export function Dashboard() {
 
   const continueWatchingCards: PosterGridItem[] =
     data?.continueWatching.map((entry) => {
-      const libraryId = entry.media.library_id;
       const subtitle =
         entry.kind === "show"
           ? [entry.episode_label, formatRemainingTime(entry.remaining_seconds)]
@@ -32,14 +31,9 @@ export function Dashboard() {
         posterPath: entry.media.poster_path,
         imdbRating: entry.media.imdb_rating,
         progressPercent: entry.media.progress_percent,
-        href:
-          entry.kind === "show" && libraryId != null && entry.show_key
-            ? `/library/${libraryId}/show/${encodeURIComponent(entry.show_key)}`
-            : undefined,
+        href: undefined,
         onClick:
-          entry.kind === "movie"
-            ? () => playMovie(entry.media)
-            : undefined,
+          entry.kind === "movie" ? () => playMovie(entry.media) : () => playEpisode(entry.media),
         onPlay:
           entry.kind === "movie"
             ? () => playMovie(entry.media)

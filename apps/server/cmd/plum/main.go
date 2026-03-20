@@ -28,6 +28,7 @@ func main() {
 	tmdbKey := getEnv("TMDB_API_KEY", "")
 	tvdbKey := getEnv("TVDB_API_KEY", "")
 	omdbKey := getEnv("OMDB_API_KEY", "")
+	musicBrainzContact := getEnv("MUSICBRAINZ_CONTACT_URL", "")
 
 	if err := ensureDatabaseDir(conn); err != nil {
 		log.Fatalf("prepare db dir: %v", err)
@@ -39,7 +40,7 @@ func main() {
 	}
 	defer sqlDB.Close()
 
-	pipeline := metadata.NewPipeline(tmdbKey, tvdbKey, omdbKey)
+	pipeline := metadata.NewPipeline(tmdbKey, tvdbKey, omdbKey, musicBrainzContact)
 	pipeline.SetIMDbRatingProvider(&db.IMDbRatingStore{DB: sqlDB})
 
 	hub := ws.NewHub()

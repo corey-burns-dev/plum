@@ -137,6 +137,7 @@ describe("App library and player wiring", () => {
     }));
     vi.spyOn(api, "identifyLibrary").mockResolvedValue({ identified: 0, failed: 0 });
     vi.spyOn(api, "confirmShow").mockResolvedValue({ updated: 1 });
+    vi.spyOn(api, "getHomeDashboard").mockResolvedValue({ continueWatching: [] });
     vi.spyOn(api, "createPlaybackSession").mockImplementation(async (mediaId, payload) => ({
       sessionId: `session-${mediaId}`,
       mediaId,
@@ -240,6 +241,44 @@ describe("App library and player wiring", () => {
     );
 
     expect(await screen.findByLabelText("Fullscreen video player")).toBeTruthy();
+  });
+
+  it("plays the surfaced continue-watching show directly from the dashboard", async () => {
+    window.history.pushState({}, "", "/");
+    vi.spyOn(api, "listLibraries").mockResolvedValue([
+      { id: 1, name: "TV", type: "tv", path: "/tv", user_id: 1 },
+    ]);
+    vi.spyOn(api, "getHomeDashboard").mockResolvedValue({
+      continueWatching: [
+        {
+          kind: "show",
+          show_title: "Space Show",
+          show_key: "tmdb-101",
+          episode_label: "S02E04",
+          remaining_seconds: 1200,
+          media: {
+            id: 55,
+            library_id: 1,
+            title: "Space Show - S02E04 - Echoes",
+            path: "/tv/Space Show/S02E04.mkv",
+            duration: 1800,
+            type: "tv",
+            season: 2,
+            episode: 4,
+            progress_percent: 33,
+          },
+        },
+      ],
+    });
+
+    renderApp();
+
+    const card = await screen.findByRole("button", { name: /^Space Show$/i });
+    fireEvent.click(card);
+
+    await waitFor(() => {
+      expect(api.createPlaybackSession).toHaveBeenCalledWith(55, expect.anything());
+    });
   });
 
   it("reveals hard TV cards as searching once easier matches appear", async () => {

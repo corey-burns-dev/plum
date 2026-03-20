@@ -181,7 +181,7 @@ func (m *LibraryScanManager) Recover() error {
 }
 
 func (m *LibraryScanManager) start(libraryID int, path, libraryType string, identify bool) libraryScanStatus {
-	if libraryType == db.LibraryTypeMusic || m.meta == nil {
+	if !m.canIdentifyLibrary(libraryType) {
 		identify = false
 	}
 
@@ -370,7 +370,7 @@ func (m *LibraryScanManager) run(libraryID int, status libraryScanStatus, librar
 		return
 	}
 	m.finish(libraryID, libraryScanPhaseCompleted, result, "")
-	if status.IdentifyRequested {
+	if status.IdentifyRequested && libraryType != db.LibraryTypeMusic {
 		m.startIdentify(libraryID)
 	}
 	m.startEnrichment(libraryID, libraryType, path)
@@ -495,16 +495,33 @@ func (m *LibraryScanManager) startEnrichment(libraryID int, libraryType, path st
 		}
 		defer func() { <-m.enrichSem }()
 
-		_, err := db.HandleScanLibraryWithOptions(ctx, m.db, path, libraryType, libraryID, db.ScanOptions{
+		options := db.ScanOptions{
 			ProbeMedia:             true,
 			ProbeEmbeddedSubtitles: true,
 			ScanSidecarSubtitles:   true,
-		})
+		}
+		if libraryType == db.LibraryTypeMusic && status.IdentifyRequested {
+			if musicIdentifier, ok := m.meta.(metadata.MusicIdentifier); ok {
+				options.MusicIdentifier = musicIdentifier
+			}
+		}
+		_, err := db.HandleScanLibraryWithOptions(ctx, m.db, path, libraryType, libraryID, options)
 		if err != nil && ctx.Err() == nil {
 			// Enrichment is best-effort; preserve browseability and just stop tracking.
 		}
 		m.finishEnrichment(libraryID)
 	}()
+}
+
+func (m *LibraryScanManager) canIdentifyLibrary(libraryType string) bool {
+	if m.meta == nil {
+		return false
+	}
+	if libraryType != db.LibraryTypeMusic {
+		return true
+	}
+	_, ok := m.meta.(metadata.MusicIdentifier)
+	return ok
 }
 
 func (m *LibraryScanManager) finishEnrichment(libraryID int) {

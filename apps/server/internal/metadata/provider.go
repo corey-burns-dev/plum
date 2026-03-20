@@ -9,6 +9,39 @@ type Identifier interface {
 	IdentifyMovie(ctx context.Context, info MediaInfo) *MatchResult
 }
 
+// MusicInfo is the provider-facing metadata used to identify a track.
+type MusicInfo struct {
+	Title       string
+	Artist      string
+	Album       string
+	AlbumArtist string
+	DiscNumber  int
+	TrackNumber int
+	ReleaseYear int
+}
+
+// MusicIdentifier resolves music metadata for a track.
+type MusicIdentifier interface {
+	IdentifyMusic(ctx context.Context, info MusicInfo) *MusicMatchResult
+}
+
+// MusicMatchResult is a provider-agnostic metadata result for a music track.
+type MusicMatchResult struct {
+	Title          string
+	Artist         string
+	Album          string
+	AlbumArtist    string
+	PosterURL      string
+	ReleaseYear    int
+	DiscNumber     int
+	TrackNumber    int
+	Provider       string
+	RecordingID    string
+	ReleaseID      string
+	ReleaseGroupID string
+	ArtistID       string
+}
+
 // MatchResult is a provider-agnostic metadata result for a movie or TV episode.
 // PosterURL and BackdropURL are full URLs so the pipeline owns URL shape.
 type MatchResult struct {

@@ -20,6 +20,7 @@ type ContinueWatchingEntry struct {
 	ShowTitle        string    `json:"show_title,omitempty"`
 	EpisodeLabel     string    `json:"episode_label,omitempty"`
 	RemainingSeconds float64   `json:"remaining_seconds"`
+	activityAt       string
 }
 
 type HomeDashboard struct {
@@ -53,17 +54,21 @@ func GetHomeDashboardForUser(db *sql.DB, userID int) (HomeDashboard, error) {
 	}
 
 	movies := make([]ContinueWatchingEntry, 0)
-	shows := make(map[string]ContinueWatchingEntry)
+	showItems := make(map[string][]MediaItem)
 	for _, item := range items {
-		if item.Type == LibraryTypeMusic || item.Completed || item.ProgressPercent <= 0 {
+		if item.Type == LibraryTypeMusic {
 			continue
 		}
-		entry := ContinueWatchingEntry{
-			Media:            item,
-			RemainingSeconds: item.RemainingSeconds,
-		}
 		if item.Type == LibraryTypeMovie {
-			entry.Kind = "movie"
+			if item.Completed || item.ProgressPercent <= 0 {
+				continue
+			}
+			entry := ContinueWatchingEntry{
+				Kind:             "movie",
+				Media:            item,
+				RemainingSeconds: item.RemainingSeconds,
+				activityAt:       item.LastWatchedAt,
+			}
 			movies = append(movies, entry)
 			continue
 		}
@@ -71,25 +76,83 @@ func GetHomeDashboardForUser(db *sql.DB, userID int) (HomeDashboard, error) {
 			continue
 		}
 		key := showKeyFromItem(item.TMDBID, item.Title)
-		entry.Kind = "show"
-		entry.ShowKey = key
-		entry.ShowTitle = showTitleFromEpisodeTitle(item.Title)
-		entry.EpisodeLabel = episodeLabel(item)
-		if existing, ok := shows[key]; !ok || existing.Media.LastWatchedAt < item.LastWatchedAt {
-			shows[key] = entry
-		}
+		showItems[key] = append(showItems[key], item)
 	}
 
-	entries := make([]ContinueWatchingEntry, 0, len(movies)+len(shows))
+	entries := make([]ContinueWatchingEntry, 0, len(movies)+len(showItems))
 	entries = append(entries, movies...)
-	for _, entry := range shows {
-		entries = append(entries, entry)
+	for showKey, episodes := range showItems {
+		if entry, ok := continueWatchingEntryForShow(showKey, episodes); ok {
+			entries = append(entries, entry)
+		}
 	}
 	sort.Slice(entries, func(i, j int) bool {
-		return entries[i].Media.LastWatchedAt > entries[j].Media.LastWatchedAt
+		return entries[i].activityAt > entries[j].activityAt
 	})
 
 	return HomeDashboard{ContinueWatching: entries}, nil
+}
+
+func continueWatchingEntryForShow(showKey string, episodes []MediaItem) (ContinueWatchingEntry, bool) {
+	if len(episodes) == 0 {
+		return ContinueWatchingEntry{}, false
+	}
+	sort.Slice(episodes, func(i, j int) bool {
+		if episodes[i].Season != episodes[j].Season {
+			return episodes[i].Season < episodes[j].Season
+		}
+		if episodes[i].Episode != episodes[j].Episode {
+			return episodes[i].Episode < episodes[j].Episode
+		}
+		return episodes[i].Title < episodes[j].Title
+	})
+
+	var partial *MediaItem
+	for i := range episodes {
+		if episodes[i].Completed || episodes[i].ProgressPercent <= 0 {
+			continue
+		}
+		if partial == nil || partial.LastWatchedAt < episodes[i].LastWatchedAt {
+			partial = &episodes[i]
+		}
+	}
+	if partial != nil {
+		return buildShowContinueWatchingEntry(showKey, *partial, partial.LastWatchedAt), true
+	}
+
+	var latestCompletedIndex = -1
+	var latestCompletedAt string
+	for i := range episodes {
+		if !episodes[i].Completed || episodes[i].LastWatchedAt == "" {
+			continue
+		}
+		if latestCompletedIndex < 0 || latestCompletedAt < episodes[i].LastWatchedAt {
+			latestCompletedIndex = i
+			latestCompletedAt = episodes[i].LastWatchedAt
+		}
+	}
+	if latestCompletedIndex < 0 {
+		return ContinueWatchingEntry{}, false
+	}
+	for i := latestCompletedIndex + 1; i < len(episodes); i++ {
+		if episodes[i].Completed {
+			continue
+		}
+		return buildShowContinueWatchingEntry(showKey, episodes[i], latestCompletedAt), true
+	}
+	return ContinueWatchingEntry{}, false
+}
+
+func buildShowContinueWatchingEntry(showKey string, item MediaItem, activityAt string) ContinueWatchingEntry {
+	return ContinueWatchingEntry{
+		Kind:             "show",
+		Media:            item,
+		ShowKey:          showKey,
+		ShowTitle:        showTitleFromEpisodeTitle(item.Title),
+		EpisodeLabel:     episodeLabel(item),
+		RemainingSeconds: item.RemainingSeconds,
+		activityAt:       activityAt,
+	}
 }
 
 func UpsertPlaybackProgress(db *sql.DB, userID, mediaID int, positionSeconds, durationSeconds float64, completed bool) error {

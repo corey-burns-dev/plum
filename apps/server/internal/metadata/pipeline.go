@@ -11,13 +11,15 @@ type Pipeline struct {
 	tvProviders           []TVProvider
 	seriesDetailsProvider SeriesDetailsProvider
 	imdbRatings           IMDbRatingProvider
+	musicProvider         MusicIdentifier
 	omdb                  *OMDBClient
 }
 
 // NewPipeline builds a pipeline from API keys. Empty keys skip that provider.
-func NewPipeline(tmdbKey, tvdbKey, omdbKey string) *Pipeline {
+func NewPipeline(tmdbKey, tvdbKey, omdbKey, musicBrainzContact string) *Pipeline {
 	p := &Pipeline{
-		omdb: NewOMDBClient(omdbKey),
+		omdb:          NewOMDBClient(omdbKey),
+		musicProvider: NewMusicBrainzClient(musicBrainzContact),
 	}
 	if tmdbKey != "" {
 		tmdb := NewTMDBClient(tmdbKey)
@@ -37,6 +39,13 @@ func NewPipeline(tmdbKey, tvdbKey, omdbKey string) *Pipeline {
 
 func (p *Pipeline) SetIMDbRatingProvider(provider IMDbRatingProvider) {
 	p.imdbRatings = provider
+}
+
+func (p *Pipeline) IdentifyMusic(ctx context.Context, info MusicInfo) *MusicMatchResult {
+	if p.musicProvider == nil {
+		return nil
+	}
+	return p.musicProvider.IdentifyMusic(ctx, info)
 }
 
 // IdentifyMovie returns the best movie match using scorer and confidence threshold.
