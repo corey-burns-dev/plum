@@ -9,6 +9,8 @@ export type SubtitleAppearance = {
   color: string;
 };
 
+export type PlayerControlsAppearance = "default" | "minimal";
+
 export type ResolvedLibraryPlaybackPreferences = {
   preferredAudioLanguage: string;
   preferredSubtitleLanguage: string;
@@ -16,12 +18,15 @@ export type ResolvedLibraryPlaybackPreferences = {
 };
 
 export const subtitleAppearanceStorageKey = "plum:subtitle-appearance";
+export const playerControlsAppearanceStorageKey = "plum:player-controls-appearance";
 
 export const defaultSubtitleAppearance: SubtitleAppearance = {
   size: "medium",
   position: "bottom",
   color: "#ffffff",
 };
+
+export const defaultPlayerControlsAppearance: PlayerControlsAppearance = "default";
 
 export const subtitleSizeOptions: Array<{ value: SubtitleSize; label: string }> = [
   { value: "small", label: "Small" },
@@ -32,6 +37,23 @@ export const subtitleSizeOptions: Array<{ value: SubtitleSize; label: string }> 
 export const subtitlePositionOptions: Array<{ value: SubtitlePosition; label: string }> = [
   { value: "bottom", label: "Bottom" },
   { value: "top", label: "Top" },
+];
+
+export const playerControlsAppearanceOptions: Array<{
+  value: PlayerControlsAppearance;
+  label: string;
+  description: string;
+}> = [
+  {
+    value: "default",
+    label: "Default",
+    description: "Icons with text labels for faster scanning.",
+  },
+  {
+    value: "minimal",
+    label: "Minimal",
+    description: "Icon-first controls with less on-screen chrome.",
+  },
 ];
 
 export const languagePreferenceOptions: Array<{ value: string; label: string }> = [
@@ -162,6 +184,17 @@ export function readStoredSubtitleAppearance(): SubtitleAppearance {
 export function writeStoredSubtitleAppearance(preferences: SubtitleAppearance) {
   if (typeof window === "undefined") return;
   window.localStorage.setItem(subtitleAppearanceStorageKey, JSON.stringify(preferences));
+}
+
+export function readStoredPlayerControlsAppearance(): PlayerControlsAppearance {
+  if (typeof window === "undefined") return defaultPlayerControlsAppearance;
+  const stored = window.localStorage.getItem(playerControlsAppearanceStorageKey);
+  return stored === "minimal" ? "minimal" : defaultPlayerControlsAppearance;
+}
+
+export function writeStoredPlayerControlsAppearance(preference: PlayerControlsAppearance) {
+  if (typeof window === "undefined") return;
+  window.localStorage.setItem(playerControlsAppearanceStorageKey, preference);
 }
 
 export function subtitleFontSizeValue(size: SubtitleSize): string {

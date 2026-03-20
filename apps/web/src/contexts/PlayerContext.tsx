@@ -107,6 +107,8 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
   const [muted, setMutedState] = useState(false);
   const [lastEvent, setLastEvent] = useState("");
   const mountedRef = useRef(true);
+  const volumeRef = useRef(1);
+  const mutedRef = useRef(false);
   const activeVideoItemIdRef = useRef<number | null>(null);
   const videoSessionRef = useRef<VideoSessionState | null>(null);
   const mediaElementsRef = useRef<
@@ -194,13 +196,15 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
     (slot: MediaElementSlot, element: HTMLMediaElement | null) => {
       mediaElementsRef.current[slot] = element;
       if (!element) return;
-      element.volume = volume;
-      element.muted = muted;
+      element.volume = volumeRef.current;
+      element.muted = mutedRef.current;
     },
-    [muted, volume],
+    [],
   );
 
   useEffect(() => {
+    volumeRef.current = volume;
+    mutedRef.current = muted;
     for (const element of Object.values(mediaElementsRef.current)) {
       if (!element) continue;
       element.volume = volume;

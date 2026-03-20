@@ -6,6 +6,7 @@ import * as api from "./api";
 import App from "./App";
 import { IdentifyShowDialog } from "./components/IdentifyShowDialog";
 import * as IdentifyQueueContext from "./contexts/IdentifyQueueContext";
+import { playerControlsAppearanceStorageKey } from "./lib/playbackPreferences";
 
 vi.mock("@plum/shared", async () => {
   const actual = await vi.importActual<typeof import("@plum/shared")>("@plum/shared");
@@ -96,6 +97,7 @@ describe("App library and player wiring", () => {
   beforeEach(() => {
     vi.restoreAllMocks();
     vi.mocked(loadAuthSessionEffect).mockReset();
+    window.localStorage.clear();
     window.history.pushState({}, "", "/library/1");
     mockAuthSession();
     vi.spyOn(api, "getSetupStatus").mockResolvedValue({ hasAdmin: true });
@@ -1597,6 +1599,39 @@ describe("App library and player wiring", () => {
     });
 
     expect(await screen.findByText(/Playback defaults saved./i)).toBeTruthy();
+  });
+
+  it("updates the player controls appearance from settings", async () => {
+    window.history.pushState({}, "", "/settings");
+    vi.spyOn(api, "listLibraries").mockResolvedValue([
+      {
+        id: 14,
+        name: "Anime",
+        type: "anime",
+        path: "/anime",
+        user_id: 1,
+        preferred_audio_language: "ja",
+        preferred_subtitle_language: "en",
+        subtitles_enabled_by_default: true,
+      },
+    ]);
+    vi.spyOn(api, "getTranscodingSettings").mockResolvedValue({
+      settings: defaultTranscodingSettings,
+      warnings: [],
+    });
+
+    renderApp();
+
+    await screen.findByText(/Player controls look/i);
+    fireEvent.click(screen.getByRole("button", { name: /Minimal/i }));
+
+    await waitFor(() => {
+      expect(window.localStorage.getItem(playerControlsAppearanceStorageKey)).toBe("minimal");
+      expect(screen.getByRole("button", { name: /Minimal/i })).toHaveAttribute(
+        "aria-pressed",
+        "true",
+      );
+    });
   });
 
   it("cancels transcode when dismissing a video player", async () => {

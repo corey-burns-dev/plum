@@ -2,6 +2,7 @@ import { act, fireEvent, render, screen, waitFor } from "@testing-library/react"
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import * as api from "../api";
+import { playerControlsAppearanceStorageKey } from "../lib/playbackPreferences";
 import { PlaybackDock } from "./PlaybackDock";
 
 type MockHlsInstance = {
@@ -97,6 +98,7 @@ function renderDock() {
 describe("PlaybackDock audio track selection", () => {
   beforeEach(() => {
     vi.restoreAllMocks();
+    window.localStorage.clear();
     vi.spyOn(console, "error").mockImplementation(() => {});
     mockChangeAudioTrack.mockReset();
     mockChangeAudioTrack.mockResolvedValue(undefined);
@@ -208,6 +210,56 @@ describe("PlaybackDock audio track selection", () => {
     expect(mockHlsInstances[1]?.loadSource).toHaveBeenCalledWith(
       "http://localhost:3000/api/playback/sessions/session-1/revisions/2/index.m3u8",
     );
+  });
+
+  it("keeps the active HLS attachment when mute state rerenders the player", async () => {
+    const { queryClient, rerender } = renderDock();
+
+    await waitFor(() => {
+      expect(mockHlsInstances).toHaveLength(1);
+    });
+
+    const firstHls = mockHlsInstances[0];
+    if (!firstHls) {
+      throw new Error("Expected an HLS instance");
+    }
+
+    mockUsePlayer.mockReturnValue({
+      ...mockUsePlayer.mock.results.at(-1)?.value,
+      muted: true,
+      registerMediaElement: vi.fn(),
+    });
+
+    rerender(
+      <QueryClientProvider client={queryClient}>
+        <PlaybackDock />
+      </QueryClientProvider>,
+    );
+
+    await waitFor(() => {
+      expect(screen.getByRole("button", { name: "Unmute" })).toBeTruthy();
+    });
+    expect(mockHlsInstances).toHaveLength(1);
+    expect(firstHls.destroy).not.toHaveBeenCalled();
+  });
+
+  it("reads and updates the player controls appearance preference", async () => {
+    window.localStorage.setItem(playerControlsAppearanceStorageKey, "minimal");
+
+    renderDock();
+
+    const dock = screen.getByLabelText("Playback dock");
+    expect(dock.className).toContain("playback-dock--controls-minimal");
+
+    fireEvent.click(screen.getByRole("button", { name: "Subtitle settings" }));
+    fireEvent.click(screen.getByRole("button", { name: "Default" }));
+
+    await waitFor(() => {
+      expect(window.localStorage.getItem(playerControlsAppearanceStorageKey)).toBe("default");
+      expect(screen.getByLabelText("Playback dock").className).toContain(
+        "playback-dock--controls-default",
+      );
+    });
   });
 
   it("restarts loading on fatal HLS network errors", async () => {
