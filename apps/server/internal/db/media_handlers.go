@@ -10,8 +10,8 @@ import (
 
 var ErrNotFound = errors.New("not found")
 
-func HandleListMedia(w http.ResponseWriter, r *http.Request, dbConn *sql.DB) {
-	items, err := GetAllMedia(dbConn)
+func HandleListMediaForUser(w http.ResponseWriter, r *http.Request, dbConn *sql.DB, userID int) {
+	items, err := GetAllMediaForUser(dbConn, userID)
 	if err != nil {
 		log.Printf("list media: %v", err)
 		http.Error(w, "internal error", http.StatusInternalServerError)

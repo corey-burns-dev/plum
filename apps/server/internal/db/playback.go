@@ -54,7 +54,7 @@ func GetMediaByLibraryIDForUser(db *sql.DB, libraryID int, userID int) ([]MediaI
 }
 
 func GetHomeDashboardForUser(db *sql.DB, userID int) (HomeDashboard, error) {
-	items, err := queryAllMediaByKind(db, "")
+	items, err := queryAllMediaByKind(db, userID, "")
 	if err != nil {
 		return HomeDashboard{}, err
 	}

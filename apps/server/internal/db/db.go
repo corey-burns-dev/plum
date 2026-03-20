@@ -735,8 +735,8 @@ func columnExistsTx(ctx context.Context, tx *sql.Tx, table, column string) (bool
 	return false, rows.Err()
 }
 
-func GetAllMedia(db *sql.DB) ([]MediaItem, error) {
-	items, err := queryAllMediaByKind(db, "")
+func GetAllMediaForUser(db *sql.DB, userID int) ([]MediaItem, error) {
+	items, err := queryAllMediaByKind(db, userID, "")
 	if err != nil {
 		return nil, err
 	}
@@ -745,7 +745,8 @@ func GetAllMedia(db *sql.DB) ([]MediaItem, error) {
 
 // queryAllMediaByKind returns media from category tables joined with media_global.
 // If kind is "", queries all four categories and merges; otherwise only that kind.
-func queryAllMediaByKind(db *sql.DB, kind string) ([]MediaItem, error) {
+// If userID > 0, filters media to only those in libraries owned by that user.
+func queryAllMediaByKind(db *sql.DB, userID int, kind string) ([]MediaItem, error) {
 	kinds := []string{"movie", "tv", "anime", "music"}
 	if kind != "" {
 		kinds = []string{kind}
@@ -755,16 +756,23 @@ func queryAllMediaByKind(db *sql.DB, kind string) ([]MediaItem, error) {
 		table := mediaTableForKind(k)
 		var q string
 		var args []interface{}
+		args = append(args, k)
+
 		if table == "music_tracks" {
-			q = `SELECT g.id, m.library_id, m.title, m.path, m.duration, m.match_status, m.artist, m.album, m.album_artist, m.poster_path, COALESCE(m.disc_number, 0), COALESCE(m.track_number, 0), COALESCE(m.release_year, 0) FROM music_tracks m JOIN media_global g ON g.kind = ? AND g.ref_id = m.id ORDER BY g.id`
-			args = []interface{}{k}
+			q = `SELECT g.id, m.library_id, m.title, m.path, m.duration, m.match_status, m.artist, m.album, m.album_artist, m.poster_path, COALESCE(m.disc_number, 0), COALESCE(m.track_number, 0), COALESCE(m.release_year, 0) FROM music_tracks m JOIN media_global g ON g.kind = ? AND g.ref_id = m.id `
 		} else if table == "tv_episodes" || table == "anime_episodes" {
-			q = `SELECT g.id, m.library_id, m.title, m.path, m.duration, m.match_status, m.tmdb_id, m.tvdb_id, m.overview, m.poster_path, m.backdrop_path, m.release_date, m.vote_average, m.imdb_id, m.imdb_rating, COALESCE(m.season, 0), COALESCE(m.episode, 0), COALESCE(m.metadata_review_needed, 0), COALESCE(m.metadata_confirmed, 0), m.thumbnail_path FROM ` + table + ` m JOIN media_global g ON g.kind = ? AND g.ref_id = m.id ORDER BY g.id`
-			args = []interface{}{k}
+			q = `SELECT g.id, m.library_id, m.title, m.path, m.duration, m.match_status, m.tmdb_id, m.tvdb_id, m.overview, m.poster_path, m.backdrop_path, m.release_date, m.vote_average, m.imdb_id, m.imdb_rating, COALESCE(m.season, 0), COALESCE(m.episode, 0), COALESCE(m.metadata_review_needed, 0), COALESCE(m.metadata_confirmed, 0), m.thumbnail_path FROM ` + table + ` m JOIN media_global g ON g.kind = ? AND g.ref_id = m.id `
 		} else {
-			q = `SELECT g.id, m.library_id, m.title, m.path, m.duration, m.match_status, m.tmdb_id, m.tvdb_id, m.overview, m.poster_path, m.backdrop_path, m.release_date, m.vote_average, m.imdb_id, m.imdb_rating FROM ` + table + ` m JOIN media_global g ON g.kind = ? AND g.ref_id = m.id ORDER BY g.id`
-			args = []interface{}{k}
+			q = `SELECT g.id, m.library_id, m.title, m.path, m.duration, m.match_status, m.tmdb_id, m.tvdb_id, m.overview, m.poster_path, m.backdrop_path, m.release_date, m.vote_average, m.imdb_id, m.imdb_rating FROM ` + table + ` m JOIN media_global g ON g.kind = ? AND g.ref_id = m.id `
 		}
+
+		if userID > 0 {
+			q += ` JOIN libraries l ON l.id = m.library_id AND l.user_id = ? `
+			args = append(args, userID)
+		}
+
+		q += ` ORDER BY g.id`
+
 		rows, err := db.Query(q, args...)
 		if err != nil {
 			return nil, err

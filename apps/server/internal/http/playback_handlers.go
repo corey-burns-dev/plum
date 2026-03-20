@@ -20,7 +20,12 @@ type PlaybackHandler struct {
 }
 
 func (h *PlaybackHandler) ListMedia(w http.ResponseWriter, r *http.Request) {
-	db.HandleListMedia(w, r, h.DB)
+	u := UserFromContext(r.Context())
+	if u == nil {
+		http.Error(w, "unauthorized", http.StatusUnauthorized)
+		return
+	}
+	db.HandleListMediaForUser(w, r, h.DB, u.ID)
 }
 
 func (h *PlaybackHandler) CreateSession(w http.ResponseWriter, r *http.Request) {
