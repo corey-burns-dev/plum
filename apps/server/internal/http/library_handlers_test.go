@@ -1319,13 +1319,13 @@ func TestLibraryScanManager_RequeueDoesNotDuplicateQueuedJob(t *testing.T) {
 	}
 
 	scanJobs := NewLibraryScanManager(dbConn, nil, nil)
-	bigStatus := scanJobs.start(1, bigRoot, db.LibraryTypeTV, false)
+	bigStatus := scanJobs.start(1, bigRoot, db.LibraryTypeTV, false, nil)
 	if bigStatus.Phase == "" {
 		t.Fatal("expected big status")
 	}
 
-	firstQueued := scanJobs.start(2, smallRoot, db.LibraryTypeTV, false)
-	secondQueued := scanJobs.start(2, smallRoot, db.LibraryTypeTV, false)
+	firstQueued := scanJobs.start(2, smallRoot, db.LibraryTypeTV, false, nil)
+	secondQueued := scanJobs.start(2, smallRoot, db.LibraryTypeTV, false, nil)
 
 	if firstQueued.LibraryID != secondQueued.LibraryID {
 		t.Fatalf("requeue returned different jobs: %+v vs %+v", firstQueued, secondQueued)
@@ -1335,8 +1335,63 @@ func TestLibraryScanManager_RequeueDoesNotDuplicateQueuedJob(t *testing.T) {
 	}
 
 	status := scanJobs.status(2)
-	if status.QueuePosition != 1 {
+	if status.QueuePosition != 2 {
 		t.Fatalf("queue position = %d", status.QueuePosition)
+	}
+}
+
+func TestLibraryScanManager_PreservesRerunPartialSubpathsWhileScanning(t *testing.T) {
+	dbConn, err := db.InitDB(":memory:")
+	if err != nil {
+		t.Fatalf("init db: %v", err)
+	}
+	t.Cleanup(func() { _ = dbConn.Close() })
+
+	scanJobs := NewLibraryScanManager(dbConn, nil, nil)
+	scanJobs.mu.Lock()
+	scanJobs.jobs[1] = libraryScanStatus{LibraryID: 1, Phase: libraryScanPhaseScanning}
+	scanJobs.mu.Unlock()
+
+	scanJobs.start(1, "/tv", db.LibraryTypeTV, false, []string{"Show A"})
+
+	got := scanJobs.reruns[1].subpaths
+	if len(got) != 1 || got[0] != "Show A" {
+		t.Fatalf("rerun subpaths = %#v", got)
+	}
+}
+
+func TestStartLibraryScan_RejectsInvalidSubpath(t *testing.T) {
+	dbConn, err := db.InitDB(":memory:")
+	if err != nil {
+		t.Fatalf("init db: %v", err)
+	}
+	t.Cleanup(func() { _ = dbConn.Close() })
+
+	now := time.Now().UTC()
+	var userID int
+	if err := dbConn.QueryRow(`INSERT INTO users (email, password_hash, is_admin, created_at) VALUES (?, ?, 1, ?) RETURNING id`, "test@test.com", "hash", now).Scan(&userID); err != nil {
+		t.Fatalf("insert user: %v", err)
+	}
+	var libraryID int
+	root := t.TempDir()
+	if err := dbConn.QueryRow(`INSERT INTO libraries (user_id, name, type, path, created_at) VALUES (?, ?, ?, ?, ?) RETURNING id`, userID, "TV", db.LibraryTypeTV, root, now).Scan(&libraryID); err != nil {
+		t.Fatalf("insert library: %v", err)
+	}
+
+	handler := &LibraryHandler{
+		DB:       dbConn,
+		ScanJobs: NewLibraryScanManager(dbConn, nil, nil),
+	}
+	req := httptest.NewRequest(http.MethodPost, "/api/libraries/"+strconv.Itoa(libraryID)+"/scan/start?subpath=../outside", nil)
+	rctx := chi.NewRouteContext()
+	rctx.URLParams.Add("id", strconv.Itoa(libraryID))
+	req = req.WithContext(context.WithValue(withUser(req.Context(), &db.User{ID: userID, IsAdmin: true}), chi.RouteCtxKey, rctx))
+	rec := httptest.NewRecorder()
+
+	handler.StartLibraryScan(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d body=%s", rec.Code, rec.Body.String())
 	}
 }
 
@@ -1374,7 +1429,7 @@ func TestLibraryScanManager_StartDoesNotBlockOnEstimate(t *testing.T) {
 
 	scanJobs := NewLibraryScanManager(dbConn, nil, nil)
 	startedAt := time.Now()
-	status := scanJobs.start(7, root, db.LibraryTypeTV, false)
+	status := scanJobs.start(7, root, db.LibraryTypeTV, false, nil)
 	if elapsed := time.Since(startedAt); elapsed > 100*time.Millisecond {
 		t.Fatalf("start took too long: %s", elapsed)
 	}

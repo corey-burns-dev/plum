@@ -6,34 +6,34 @@ Goal: create the core skeleton so everything later plugs in cleanly.
 
 ### Project setup
 
-* [x] Initialize repo structure
-* [x] Backend service skeleton (Go)
-* [x] Frontend app scaffold (React/Vite)
-* [x] Docker dev environment
-* [x] Config system
-* [x] Logging system
-* [x] Error handling framework
-* [x] Environment configuration
-* [ ] API client SDK (TS)
-* [ ] Metrics (Prometheus style)
-* [ ] Performance profiling
+- [x] Initialize repo structure
+- [x] Backend service skeleton (Go)
+- [x] Frontend app scaffold (React/Vite)
+- [x] Docker dev environment
+- [x] Config system
+- [x] Logging system
+- [x] Error handling framework
+- [x] Environment configuration
+- [x] API client SDK (TS)
+- [ ] Metrics (Prometheus style)
+- [ ] Performance profiling
 
 ### Database
 
-* [x] DB schema design
-* [x] Migration system
-* [x] ORM or query layer
-* [ ] seed/test data support
-* [x] Database indexing strategy
+- [x] DB schema design
+- [x] Migration system
+- [x] ORM or query layer
+- [ ] seed/test data support
+- [x] Database indexing strategy
 
 ### Basic API framework
 
-* [x] API routing
-* [x] request validation
-* [x] response formatting
-* [x] auth middleware
-* [ ] API versioning strategy
-* [ ] API rate limiting
+- [x] API routing
+- [x] request validation
+- [x] response formatting
+- [x] auth middleware
+- [ ] API versioning strategy
+- [ ] API rate limiting
 
 ---
 
@@ -43,41 +43,41 @@ Goal: handle background work and detect media on disk.
 
 ### Job system
 
-* [x] job queue
-* [x] worker pool
-* [ ] job retry system
-* [x] job priority
-* [x] job monitoring
+- [x] job queue
+- [x] worker pool
+- [ ] job retry system
+- [x] job priority
+- [x] job monitoring
 
 ### Library management
 
-* [x] create library
-* [x] library types (movies / shows)
-* [x] add library folders
-* [x] library settings
+- [x] create library
+- [x] library types (movies / shows)
+- [x] add library folders
+- [x] library settings
 
 ### Filesystem scanning
 
-* [x] directory scanner
-* [x] recursive scanning
-* [ ] file change detection
-* [x] background scan jobs
-* [x] manual scan trigger
-* [ ] filesystem watcher
-* [ ] debounce scan triggers
-* [ ] partial folder scans
-* [ ] scan scheduling
+- [x] directory scanner
+- [x] recursive scanning
+- [x] file change detection
+- [x] background scan jobs
+- [x] manual scan trigger
+- [ ] filesystem watcher
+- [x] debounce scan triggers
+- [x] partial folder scans
+- [ ] scan scheduling
 
 ### Media file model
 
-* [x] media files table
-* [x] file metadata storage
-* [ ] file hash calculation
-* [x] ffprobe integration
-* [x] stream detection (video/audio/subtitle)
-* [ ] missing file detection
-* [ ] duplicate detection
-* [ ] media identity model (items vs files)
+- [x] media files table
+- [x] file metadata storage
+- [x] file hash calculation
+- [x] ffprobe integration
+- [x] stream detection (video/audio/subtitle)
+- [x] missing file detection
+- [x] duplicate detection
+- [ ] media identity model (items vs files)
 
 ---
 
@@ -87,48 +87,48 @@ Goal: turn raw files into identifiable movies/shows and handle assets.
 
 ### Filename parsing
 
-* [x] movie parser
-* [x] TV episode parser
-* [x] season detection
-* [x] episode range detection
-* [x] anime absolute episode support
+- [x] movie parser
+- [x] TV episode parser
+- [x] season detection
+- [x] episode range detection
+- [x] anime absolute episode support
 
 ### Metadata providers
 
-* [x] TMDB integration
-* [x] TVDB integration
-* [x] OMDb integration
-* [x] provider ID storage
-* [ ] provider response cache
-* [ ] metadata refresh policy
-* [ ] metadata versioning
+- [x] TMDB integration
+- [x] TVDB integration
+- [x] OMDb integration
+- [x] provider ID storage
+- [ ] provider response cache
+- [ ] metadata refresh policy
+- [ ] metadata versioning
 
 ### Matching engine
 
-* [x] candidate search
-* [x] scoring algorithm
-* [x] confidence thresholds
-* [x] auto match
-* [x] unmatched queue
+- [x] candidate search
+- [x] scoring algorithm
+- [x] confidence thresholds
+- [x] auto match
+- [x] unmatched queue
 
 ### Metadata storage
 
-* [x] movies table
-* [ ] shows table
-* [ ] seasons table
-* [x] episodes table
-* [x] provider ID mappings
+- [x] movies table
+- [ ] shows table
+- [ ] seasons table
+- [x] episodes table
+- [x] provider ID mappings
 
 ### Image Pipeline
 
-* [x] poster fetching
-* [x] backdrop fetching
-* [ ] image caching
-* [ ] image resizing
-* [ ] thumbnail generation
-* [ ] artwork deduplication
-* [ ] CDN-style serving
-* [x] artwork prioritization
+- [x] poster fetching
+- [x] backdrop fetching
+- [ ] image caching
+- [ ] image resizing
+- [x] thumbnail generation
+- [ ] artwork deduplication
+- [ ] CDN-style serving
+- [x] artwork prioritization
 
 ---
 
@@ -138,29 +138,29 @@ Goal: basic UI for browsing media.
 
 ### Navigation
 
-* [x] libraries page
-* [x] movie grid
-* [x] show grid
-* [x] show detail page
-* [x] season page
-* [x] episode page
+- [x] libraries page
+- [x] movie grid
+- [x] show grid
+- [x] show detail page
+- [x] season page
+- [x] episode page
 
 ### Metadata display
 
-* [x] posters
-* [x] descriptions
-* [ ] cast lists
-* [ ] genres
-* [x] runtime
+- [x] posters
+- [x] descriptions
+- [ ] cast lists
+- [ ] genres
+- [x] runtime
 
 ### Search System
 
-* [ ] search index
-* [ ] title search
-* [ ] actor search
-* [ ] genre filtering
-* [ ] fuzzy search
-* [ ] index refresh jobs
+- [ ] search index
+- [ ] title search
+- [ ] actor search
+- [ ] genre filtering
+- [ ] fuzzy search
+- [ ] index refresh jobs
 
 ---
 
@@ -170,32 +170,32 @@ Goal: watch media.
 
 ### Playback session API
 
-* [x] playback session creation
-* [x] playback permissions
-* [x] session tracking
+- [x] playback session creation
+- [x] playback permissions
+- [x] session tracking
 
 ### Transcode Decision Engine
 
-* [ ] client capability detection
-* [ ] transcode decision engine
-* [ ] bitrate adaptation
-* [ ] container compatibility
+- [ ] client capability detection
+- [ ] transcode decision engine
+- [ ] bitrate adaptation
+- [ ] container compatibility
 
 ### Video streaming
 
-* [x] direct play
-* [x] HLS streaming
-* [x] transcoding pipeline
-* [x] bitrate profiles
+- [x] direct play
+- [x] HLS streaming
+- [x] transcoding pipeline
+- [x] bitrate profiles
 
 ### Custom video player
 
-* [x] custom controls
-* [x] subtitle selection
-* [x] audio track selection
-* [x] fullscreen
-* [x] keyboard shortcuts
-* [ ] timeline preview thumbnails (scrubbing)
+- [x] custom controls
+- [x] subtitle selection
+- [x] audio track selection
+- [x] fullscreen
+- [x] keyboard shortcuts
+- [ ] timeline preview thumbnails (scrubbing)
 
 ---
 
@@ -205,21 +205,21 @@ Goal: multi-user support.
 
 ### Accounts
 
-* [x] user accounts
-* [x] authentication
-* [x] session tokens
+- [x] user accounts
+- [x] authentication
+- [x] session tokens
 
 ### Profiles
 
-* [ ] user profiles
-* [ ] profile switching
-* [ ] avatar system
+- [ ] user profiles
+- [ ] profile switching
+- [ ] avatar system
 
 ### Permissions
 
-* [x] admin vs user roles
-* [ ] library restrictions
-* [ ] parental controls
+- [x] admin vs user roles
+- [ ] library restrictions
+- [ ] parental controls
 
 ---
 
@@ -229,21 +229,21 @@ Goal: track viewing behavior across devices.
 
 ### Playback State Model
 
-* [ ] playback heartbeat
-* [ ] session recovery
-* [ ] multi-device sync
+- [x] playback heartbeat
+- [x] session recovery
+- [ ] multi-device sync
 
 ### Progress tracking
 
-* [x] resume position
-* [x] watched status
-* [ ] watch history
+- [x] resume position
+- [x] watched status
+- [ ] watch history
 
 ### Discovery features
 
-* [x] continue watching
-* [ ] next up episodes
-* [ ] recently added
+- [x] continue watching
+- [ ] next up episodes
+- [x] recently added
 
 ---
 
@@ -253,22 +253,22 @@ Goal: parity with typical media servers.
 
 ### Playback features
 
-* [ ] intro detection
-* [ ] skip intro
-* [ ] skip credits
-* [ ] next episode autoplay
+- [ ] intro detection
+- [ ] skip intro
+- [ ] skip credits
+- [ ] next episode autoplay
 
 ### Subtitles
 
-* [ ] subtitle downloading
-* [ ] subtitle sync adjustment
-* [ ] subtitle burn-in
+- [ ] subtitle downloading
+- [ ] subtitle sync adjustment
+- [ ] subtitle burn-in
 
 ### Transcoding
 
-* [ ] GPU acceleration
-* [ ] codec compatibility
-* [ ] subtitle burn-in support
+- [ ] GPU acceleration
+- [ ] codec compatibility
+- [ ] subtitle burn-in support
 
 ---
 
@@ -278,26 +278,26 @@ Goal: use Plum outside the web browser.
 
 ### Device Management
 
-* [ ] device registration
-* [ ] device auth tokens
-* [ ] device profile system
-* [ ] codec capability mapping
-* [ ] resolution limits
+- [ ] device registration
+- [ ] device auth tokens
+- [ ] device profile system
+- [ ] codec capability mapping
+- [ ] resolution limits
 
 ### Remote streaming
 
-* [ ] secure remote access
-* [ ] signed stream URLs
-* [ ] expiring playback tokens
-* [ ] bitrate limits
-* [ ] adaptive streaming
+- [ ] secure remote access
+- [ ] signed stream URLs
+- [ ] expiring playback tokens
+- [ ] bitrate limits
+- [ ] adaptive streaming
 
 ### Casting & Mobile
 
-* [ ] responsive playback UI
-* [ ] touch player controls
-* [ ] Chromecast
-* [ ] AirPlay
+- [ ] responsive playback UI
+- [ ] touch player controls
+- [ ] Chromecast
+- [ ] AirPlay
 
 ---
 
@@ -307,26 +307,26 @@ Goal: make the server manageable.
 
 ### Dashboard
 
-* [ ] active sessions
-* [ ] server stats
-* [ ] scan progress
+- [ ] active sessions
+- [ ] server stats
+- [ ] scan progress
 
 ### Media management
 
-* [x] fix match
-* [ ] manual metadata editing
-* [ ] lock metadata fields
-* [ ] refresh metadata
-* [x] manual identify
-* [ ] orphaned metadata cleanup
+- [x] fix match
+- [ ] manual metadata editing
+- [ ] lock metadata fields
+- [ ] refresh metadata
+- [x] manual identify
+- [ ] orphaned metadata cleanup
 
 ### System tools
 
-* [ ] log viewer
-* [ ] job queue viewer
-* [ ] database health tools
-* [ ] configuration export
-* [ ] DB backup & restore tools
+- [ ] log viewer
+- [ ] job queue viewer
+- [ ] database health tools
+- [ ] configuration export
+- [ ] DB backup & restore tools
 
 ---
 
@@ -336,24 +336,24 @@ Goal: reach Plex/Emby territory.
 
 ### Collections & Curation
 
-* [ ] collections
-* [ ] watchlists
-* [ ] trailer playback
-* [ ] theme songs (tv shows)
+- [ ] collections
+- [ ] watchlists
+- [ ] trailer playback
+- [ ] theme songs (tv shows)
 
 ### Live TV & DVR
 
-* [ ] tuner support
-* [ ] channel scanning
-* [ ] program guide
-* [ ] recording schedules
-* [ ] series recording
-* [ ] recording management
+- [ ] tuner support
+- [ ] channel scanning
+- [ ] program guide
+- [ ] recording schedules
+- [ ] series recording
+- [ ] recording management
 
 ### Downloads
 
-* [ ] mobile downloads
-* [ ] offline sync
+- [ ] mobile downloads
+- [ ] offline sync
 
 ---
 
@@ -363,19 +363,19 @@ Goal: expand beyond core media.
 
 ### Plugin system
 
-* [ ] plugin API
-* [ ] plugin lifecycle
-* [ ] metadata provider plugins
+- [ ] plugin API
+- [ ] plugin lifecycle
+- [ ] metadata provider plugins
 
 ### Additional libraries
 
-* [x] music support
-* [ ] photo libraries
+- [x] music support
+- [ ] photo libraries
 
 ### Social features
 
-* [ ] watch together
-* [ ] activity feed
+- [ ] watch together
+- [ ] activity feed
 
 ---
 
@@ -385,51 +385,17 @@ Goal: make the system feel professional.
 
 ### Performance
 
-* [ ] query optimization
-* [ ] thumbnail pre-generation
+- [ ] query optimization
+- [ ] thumbnail pre-generation
 
 ### Reliability
 
-* [ ] crash recovery
-* [ ] tracing
+- [ ] crash recovery
+- [ ] tracing
 
 ### UX improvements
 
-* [ ] keyboard navigation
-* [ ] TV remote navigation
-* [ ] loading states
-
----
-
-## A Realistic Development Order
-
-If you're one developer, focus on this path:
-
-1. foundations & job system
-2. file scanning & library watcher
-3. metadata matching & caching
-4. media browser UI & search index
-5. playback & transcode decision engine
-6. users & sync
-7. watch tracking
-8. admin tools
-9. transcoding improvements
-10. devices / mobile web
-
-Everything else is bonus.
-
----
-
-## My Biggest Advice
-
-The **three hardest systems** in a Jellyfin-class server are:
-
-1. **metadata matching**
-2. **transcoding decisions**
-3. **library scanning**
-
-The thing that makes media servers good is:
-
-files → metadata → playback → progress → reliability
-
-If those four pillars work perfectly, the rest becomes easy.
+- [ ] keyboard navigation
+- [ ] TV remote navigation
+- [ ] loading states
+- [ ] error states

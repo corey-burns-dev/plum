@@ -628,6 +628,21 @@ export function PlaybackDock() {
     },
     [activeItem, captureVideoProgressSnapshot, isVideo, queryClient],
   );
+  const captureVideoProgressSnapshotRef = useRef(captureVideoProgressSnapshot);
+  const syncVideoProgressSnapshotRef = useRef(syncVideoProgressSnapshot);
+  const persistPlaybackProgressRef = useRef(persistPlaybackProgress);
+
+  useEffect(() => {
+    captureVideoProgressSnapshotRef.current = captureVideoProgressSnapshot;
+  }, [captureVideoProgressSnapshot]);
+
+  useEffect(() => {
+    syncVideoProgressSnapshotRef.current = syncVideoProgressSnapshot;
+  }, [syncVideoProgressSnapshot]);
+
+  useEffect(() => {
+    persistPlaybackProgressRef.current = persistPlaybackProgress;
+  }, [persistPlaybackProgress]);
 
   const applyResumePosition = useCallback(
     (element: HTMLMediaElement) => {
@@ -666,13 +681,13 @@ export function PlaybackDock() {
   const setVideoRef = useCallback((element: HTMLVideoElement | null) => {
     if (videoRef.current !== element) {
       if (videoRef.current && !element) {
-        const snapshot = captureVideoProgressSnapshot(videoRef.current);
+        const snapshot = captureVideoProgressSnapshotRef.current(videoRef.current);
         if (snapshot) {
           lastVideoProgressRef.current = snapshot;
           seekToAfterReloadRef.current = snapshot.positionSeconds;
           resumePlaybackAfterReloadRef.current = snapshot.shouldResumePlayback;
           if (snapshot.positionSeconds > 0 || snapshot.ended) {
-            void persistPlaybackProgress({ force: true, snapshot });
+            void persistPlaybackProgressRef.current({ force: true, snapshot });
           }
         }
       }
@@ -685,9 +700,9 @@ export function PlaybackDock() {
     registerMediaElementRef.current("video", element);
     syncPlaybackStateRef.current(element);
     if (element) {
-      syncVideoProgressSnapshot(element);
+      syncVideoProgressSnapshotRef.current(element);
     }
-  }, [captureVideoProgressSnapshot, persistPlaybackProgress, syncVideoProgressSnapshot]);
+  }, []);
 
   const setAudioRef = useCallback((element: HTMLAudioElement | null) => {
     audioRef.current = element;

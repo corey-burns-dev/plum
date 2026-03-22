@@ -290,7 +290,7 @@ func TestInsertScannedItem_RollsBackOnMediaGlobalFailure(t *testing.T) {
 		Path:        "/movies/broken.mp4",
 		Duration:    60,
 		MatchStatus: MatchStatusLocal,
-	})
+	}, time.Now().UTC().Format(time.RFC3339))
 	if err == nil {
 		t.Fatal("expected insertScannedItem to fail")
 	}
@@ -1304,15 +1304,198 @@ func TestHandleScanLibrary_PrunesRemovedFiles(t *testing.T) {
 	if err != nil {
 		t.Fatalf("second scan: %v", err)
 	}
-	if result.Removed != 1 {
-		t.Fatalf("expected one removed file, got %+v", result)
+	if result.Removed != 0 {
+		t.Fatalf("expected zero hard removals, got %+v", result)
 	}
 	var count int
-	if err := db.QueryRow(`SELECT COUNT(*) FROM tv_episodes WHERE library_id = ?`, tvLibID).Scan(&count); err != nil {
-		t.Fatalf("count rows: %v", err)
+	var missingSince string
+	if err := db.QueryRow(`SELECT COUNT(*), COALESCE(MAX(missing_since), '') FROM tv_episodes WHERE library_id = ?`, tvLibID).Scan(&count, &missingSince); err != nil {
+		t.Fatalf("query rows: %v", err)
 	}
-	if count != 0 {
-		t.Fatalf("expected 0 rows after prune, got %d", count)
+	if count != 1 {
+		t.Fatalf("expected 1 soft-missing row after rescan, got %d", count)
+	}
+	if missingSince == "" {
+		t.Fatal("expected missing_since to be set")
+	}
+}
+
+func TestHandleScanLibrary_StoresFileStateAndBackfillsMissingFileHashes(t *testing.T) {
+	dbConn := newTestDB(t)
+	tvLibID := getLibraryID(t, dbConn, "tv")
+
+	tmp := t.TempDir()
+	showDir := filepath.Join(tmp, "Show", "Season 1")
+	if err := os.MkdirAll(showDir, 0o755); err != nil {
+		t.Fatalf("mkdir show dir: %v", err)
+	}
+	file := filepath.Join(showDir, "Show - S01E01.mkv")
+	if err := os.WriteFile(file, []byte("video-bytes"), 0o644); err != nil {
+		t.Fatalf("write file: %v", err)
+	}
+
+	prevSkip := SkipFFprobeInScan
+	prevHash := computeMediaHash
+	SkipFFprobeInScan = true
+	hashCalls := 0
+	computeMediaHash = func(_ context.Context, path string) (string, error) {
+		hashCalls++
+		return filepath.Base(path), nil
+	}
+	defer func() {
+		SkipFFprobeInScan = prevSkip
+		computeMediaHash = prevHash
+	}()
+
+	if _, err := HandleScanLibrary(context.Background(), dbConn, filepath.Join(tmp, "Show"), LibraryTypeTV, tvLibID, nil); err != nil {
+		t.Fatalf("first scan: %v", err)
+	}
+	if _, err := HandleScanLibrary(context.Background(), dbConn, filepath.Join(tmp, "Show"), LibraryTypeTV, tvLibID, nil); err != nil {
+		t.Fatalf("second scan: %v", err)
+	}
+	if hashCalls != 1 {
+		t.Fatalf("hash calls = %d, want 1", hashCalls)
+	}
+
+	if _, err := dbConn.Exec(`UPDATE tv_episodes SET file_hash = NULL, file_hash_kind = NULL WHERE library_id = ?`, tvLibID); err != nil {
+		t.Fatalf("clear file hash: %v", err)
+	}
+	if _, err := HandleScanLibrary(context.Background(), dbConn, filepath.Join(tmp, "Show"), LibraryTypeTV, tvLibID, nil); err != nil {
+		t.Fatalf("third scan: %v", err)
+	}
+	if hashCalls != 2 {
+		t.Fatalf("hash calls after clearing file hash = %d, want 2", hashCalls)
+	}
+
+	var fileSize int64
+	var fileModTime, fileHash, lastSeenAt, missingSince string
+	if err := dbConn.QueryRow(`SELECT file_size_bytes, COALESCE(file_mod_time, ''), COALESCE(file_hash, ''), COALESCE(last_seen_at, ''), COALESCE(missing_since, '') FROM tv_episodes WHERE library_id = ?`, tvLibID).
+		Scan(&fileSize, &fileModTime, &fileHash, &lastSeenAt, &missingSince); err != nil {
+		t.Fatalf("query file state: %v", err)
+	}
+	if fileSize != int64(len("video-bytes")) {
+		t.Fatalf("file_size_bytes = %d", fileSize)
+	}
+	if fileModTime == "" || lastSeenAt == "" {
+		t.Fatalf("expected file timestamps, got mod=%q seen=%q", fileModTime, lastSeenAt)
+	}
+	if fileHash != filepath.Base(file) {
+		t.Fatalf("file_hash = %q", fileHash)
+	}
+	if missingSince != "" {
+		t.Fatalf("missing_since = %q", missingSince)
+	}
+}
+
+func TestHandleScanLibrary_PartialScanMarksOnlyScopedRowsMissing(t *testing.T) {
+	dbConn := newTestDB(t)
+	tvLibID := getLibraryID(t, dbConn, "tv")
+
+	tmp := t.TempDir()
+	showARoot := filepath.Join(tmp, "Show A", "Season 1")
+	showBRoot := filepath.Join(tmp, "Show B", "Season 1")
+	for _, dir := range []string{showARoot, showBRoot} {
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			t.Fatalf("mkdir dir: %v", err)
+		}
+	}
+	showAFile := filepath.Join(showARoot, "Show A - S01E01.mkv")
+	showBFile := filepath.Join(showBRoot, "Show B - S01E01.mkv")
+	for _, path := range []string{showAFile, showBFile} {
+		if err := os.WriteFile(path, []byte("video"), 0o644); err != nil {
+			t.Fatalf("write media file: %v", err)
+		}
+	}
+
+	prevSkip := SkipFFprobeInScan
+	SkipFFprobeInScan = true
+	defer func() { SkipFFprobeInScan = prevSkip }()
+
+	if _, err := HandleScanLibrary(context.Background(), dbConn, tmp, LibraryTypeTV, tvLibID, nil); err != nil {
+		t.Fatalf("full scan: %v", err)
+	}
+	if err := os.RemoveAll(filepath.Join(tmp, "Show A")); err != nil {
+		t.Fatalf("remove show A tree: %v", err)
+	}
+
+	if _, err := HandleScanLibraryWithOptions(context.Background(), dbConn, tmp, LibraryTypeTV, tvLibID, ScanOptions{
+		ProbeMedia:             true,
+		ProbeEmbeddedSubtitles: true,
+		ScanSidecarSubtitles:   true,
+		Subpaths:               []string{"Show A"},
+	}); err != nil {
+		t.Fatalf("partial scan: %v", err)
+	}
+
+	var missingA, missingB string
+	if err := dbConn.QueryRow(`SELECT COALESCE(missing_since, '') FROM tv_episodes WHERE path = ?`, showAFile).Scan(&missingA); err != nil {
+		t.Fatalf("query show A: %v", err)
+	}
+	if err := dbConn.QueryRow(`SELECT COALESCE(missing_since, '') FROM tv_episodes WHERE path = ?`, showBFile).Scan(&missingB); err != nil {
+		t.Fatalf("query show B: %v", err)
+	}
+	if missingA == "" {
+		t.Fatal("expected scoped row to be marked missing")
+	}
+	if missingB != "" {
+		t.Fatalf("expected sibling row to stay present, got missing_since=%q", missingB)
+	}
+}
+
+func TestGetMediaByLibraryID_ExposesDuplicateStateAndFiltersMissingRows(t *testing.T) {
+	dbConn := newTestDB(t)
+	movieLibID := getLibraryID(t, dbConn, "movie")
+
+	tmp := t.TempDir()
+	fileA := filepath.Join(tmp, "Movie A (2024).mkv")
+	fileB := filepath.Join(tmp, "Movie B (2024).mkv")
+	for _, path := range []string{fileA, fileB} {
+		if err := os.WriteFile(path, []byte("same-bytes"), 0o644); err != nil {
+			t.Fatalf("write file: %v", err)
+		}
+	}
+
+	prevSkip := SkipFFprobeInScan
+	SkipFFprobeInScan = true
+	defer func() { SkipFFprobeInScan = prevSkip }()
+
+	if _, err := HandleScanLibrary(context.Background(), dbConn, tmp, LibraryTypeMovie, movieLibID, nil); err != nil {
+		t.Fatalf("initial scan: %v", err)
+	}
+	items, err := GetMediaByLibraryID(dbConn, movieLibID)
+	if err != nil {
+		t.Fatalf("get media by library: %v", err)
+	}
+	if len(items) != 2 {
+		t.Fatalf("items = %+v", items)
+	}
+	for _, item := range items {
+		if !item.Duplicate || item.DuplicateCount != 2 {
+			t.Fatalf("expected duplicate state on %+v", item)
+		}
+	}
+
+	if err := os.Remove(fileA); err != nil {
+		t.Fatalf("remove fileA: %v", err)
+	}
+	if _, err := HandleScanLibrary(context.Background(), dbConn, tmp, LibraryTypeMovie, movieLibID, nil); err != nil {
+		t.Fatalf("rescan: %v", err)
+	}
+	items, err = GetMediaByLibraryID(dbConn, movieLibID)
+	if err != nil {
+		t.Fatalf("get media by library after rescan: %v", err)
+	}
+	if len(items) != 1 {
+		t.Fatalf("items after rescan = %+v", items)
+	}
+	if items[0].Path != fileB {
+		t.Fatalf("remaining item = %+v", items[0])
+	}
+	if items[0].Missing {
+		t.Fatalf("expected remaining item to be present: %+v", items[0])
+	}
+	if items[0].Duplicate {
+		t.Fatalf("duplicateCount = %+v", items[0])
 	}
 }
 

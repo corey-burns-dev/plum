@@ -235,6 +235,18 @@ function combineAbortSignals(primary: AbortSignal, secondary?: AbortSignal): Req
   };
 }
 
+function buildScanQuery(options?: { readonly identify?: boolean; readonly subpath?: string }): string {
+  const params = new URLSearchParams();
+  if (options?.identify === false) {
+    params.set("identify", "false");
+  }
+  if (options?.subpath && options.subpath.trim() !== "") {
+    params.set("subpath", options.subpath);
+  }
+  const query = params.toString();
+  return query === "" ? "" : `?${query}`;
+}
+
 export function effectErrorToError(error: PlumApiError | IdentifyTimeoutError): Error {
   return new Error(error.message);
 }
@@ -583,17 +595,23 @@ export function createPlumApiClient(options: CreatePlumApiClientOptions) {
         schema: LibraryScanStatusSchema,
         errorMessage: ({ status, body }) => body || `Scan status: ${status}`,
       }),
-    startLibraryScan: (id: number, options?: { readonly identify?: boolean }) =>
+    startLibraryScan: (
+      id: number,
+      options?: { readonly identify?: boolean; readonly subpath?: string },
+    ) =>
       jsonRequestEffect({
         method: "POST",
-        path: `/api/libraries/${id}/scan/start${options?.identify === false ? "?identify=false" : ""}`,
+        path: `/api/libraries/${id}/scan/start${buildScanQuery(options)}`,
         schema: LibraryScanStatusSchema,
         errorMessage: ({ status, body }) => body || `Start scan: ${status}`,
       }),
-    scanLibraryById: (id: number, options?: { readonly identify?: boolean }) =>
+    scanLibraryById: (
+      id: number,
+      options?: { readonly identify?: boolean; readonly subpath?: string },
+    ) =>
       jsonRequestEffect({
         method: "POST",
-        path: `/api/libraries/${id}/scan${options?.identify === false ? "?identify=false" : ""}`,
+        path: `/api/libraries/${id}/scan${buildScanQuery(options)}`,
         schema: ScanLibraryResultSchema,
         errorMessage: ({ status, body }) => body || `Scan: ${status}`,
       }),
@@ -782,9 +800,15 @@ export function createPlumApiClient(options: CreatePlumApiClientOptions) {
       payload: UpdateLibraryPlaybackPreferencesPayload,
     ) => run(effects.updateLibraryPlaybackPreferences(id, payload)),
     getLibraryScanStatus: (id: number) => run(effects.getLibraryScanStatus(id)),
-    startLibraryScan: (id: number, options?: { readonly identify?: boolean }) =>
+    startLibraryScan: (
+      id: number,
+      options?: { readonly identify?: boolean; readonly subpath?: string },
+    ) =>
       run(effects.startLibraryScan(id, options)),
-    scanLibraryById: (id: number, options?: { readonly identify?: boolean }) =>
+    scanLibraryById: (
+      id: number,
+      options?: { readonly identify?: boolean; readonly subpath?: string },
+    ) =>
       run(effects.scanLibraryById(id, options)),
     identifyLibrary: (id: number, options?: { readonly signal?: AbortSignal }) =>
       run(effects.identifyLibrary(id, options)),

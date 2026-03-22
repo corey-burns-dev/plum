@@ -17,6 +17,7 @@ import { queryKeys, useLibraries } from "../queries";
 
 type QueueScanOptions = {
   identify?: boolean;
+  subpath?: string;
 };
 
 type ScanQueueContextValue = {
@@ -83,6 +84,7 @@ export function ScanQueueProvider({ children }: { children: ReactNode }) {
       if (isLibraryProcessing(status) || status.phase === "completed" || status.phase === "failed") {
         void queryClient.invalidateQueries({ queryKey: queryKeys.library(libraryId) });
         void queryClient.invalidateQueries({ queryKey: queryKeys.libraries });
+        void queryClient.invalidateQueries({ queryKey: queryKeys.home });
       }
       return status;
     },
@@ -95,6 +97,7 @@ export function ScanQueueProvider({ children }: { children: ReactNode }) {
       setScanStatus(status);
       void queryClient.invalidateQueries({ queryKey: queryKeys.library(libraryId) });
       void queryClient.invalidateQueries({ queryKey: queryKeys.libraries });
+      void queryClient.invalidateQueries({ queryKey: queryKeys.home });
       return status;
     },
     [queryClient, setScanStatus],

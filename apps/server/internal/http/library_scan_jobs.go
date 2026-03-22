@@ -17,6 +17,7 @@ import (
 const (
 	libraryScanProgressFlushInterval = 500 * time.Millisecond
 	libraryScanProgressFlushEvery    = 25
+	libraryScanDebounceWindow        = 300 * time.Millisecond
 )
 
 var estimateLibraryFiles = db.EstimateLibraryFiles
@@ -62,16 +63,20 @@ type LibraryScanManager struct {
 	hub  *ws.Hub
 	meta metadata.Identifier
 
-	mu            sync.Mutex
-	jobs          map[int]libraryScanStatus
-	types         map[int]string
-	paths         map[int]string
-	enrichCancels map[int]context.CancelFunc
-	enrichSem     chan struct{}
-	identifySem   chan struct{}
-	handler       *LibraryHandler
-	lastFlushed   map[int]libraryScanFlushState
-	activeScanID  int
+	mu             sync.Mutex
+	jobs           map[int]libraryScanStatus
+	types          map[int]string
+	paths          map[int]string
+	subpaths       map[int][]string
+	reruns         map[int]scanStartRequest
+	debounceReady  map[int]bool
+	debounceTimers map[int]*time.Timer
+	enrichCancels  map[int]context.CancelFunc
+	enrichSem      chan struct{}
+	identifySem    chan struct{}
+	handler        *LibraryHandler
+	lastFlushed    map[int]libraryScanFlushState
+	activeScanID   int
 }
 
 type libraryScanFlushState struct {
@@ -84,18 +89,27 @@ type queuedLibrary struct {
 	queuedAt string
 }
 
+type scanStartRequest struct {
+	identify bool
+	subpaths []string
+}
+
 func NewLibraryScanManager(sqlDB *sql.DB, meta metadata.Identifier, hub *ws.Hub) *LibraryScanManager {
 	return &LibraryScanManager{
-		db:            sqlDB,
-		hub:           hub,
-		meta:          meta,
-		jobs:          make(map[int]libraryScanStatus),
-		types:         make(map[int]string),
-		paths:         make(map[int]string),
-		enrichCancels: make(map[int]context.CancelFunc),
-		enrichSem:     make(chan struct{}, 1),
-		identifySem:   make(chan struct{}, 1),
-		lastFlushed:   make(map[int]libraryScanFlushState),
+		db:             sqlDB,
+		hub:            hub,
+		meta:           meta,
+		jobs:           make(map[int]libraryScanStatus),
+		types:          make(map[int]string),
+		paths:          make(map[int]string),
+		subpaths:       make(map[int][]string),
+		reruns:         make(map[int]scanStartRequest),
+		debounceReady:  make(map[int]bool),
+		debounceTimers: make(map[int]*time.Timer),
+		enrichCancels:  make(map[int]context.CancelFunc),
+		enrichSem:      make(chan struct{}, 1),
+		identifySem:    make(chan struct{}, 1),
+		lastFlushed:    make(map[int]libraryScanFlushState),
 	}
 }
 
@@ -141,6 +155,7 @@ func (m *LibraryScanManager) Recover() error {
 				status.IdentifyFailed = 0
 			}
 			m.jobs[status.LibraryID] = status
+			m.debounceReady[status.LibraryID] = true
 			scansToEstimate = append(scansToEstimate, pendingEstimate{
 				libraryID: status.LibraryID,
 				path:      persisted.Path,
@@ -171,7 +186,7 @@ func (m *LibraryScanManager) Recover() error {
 	m.scheduleNext()
 
 	for _, libraryID := range enrichmentsToResume {
-		m.startEnrichment(libraryID, m.types[libraryID], m.paths[libraryID])
+		m.startEnrichment(libraryID, m.types[libraryID], m.paths[libraryID], m.subpaths[libraryID])
 	}
 	for _, libraryID := range identifiesToResume {
 		m.startIdentify(libraryID)
@@ -180,10 +195,11 @@ func (m *LibraryScanManager) Recover() error {
 	return nil
 }
 
-func (m *LibraryScanManager) start(libraryID int, path, libraryType string, identify bool) libraryScanStatus {
+func (m *LibraryScanManager) start(libraryID int, path, libraryType string, identify bool, subpaths []string) libraryScanStatus {
 	if !m.canIdentifyLibrary(libraryType) {
 		identify = false
 	}
+	normalizedSubpaths, _ := db.NormalizeScanSubpaths(subpaths)
 
 	m.mu.Lock()
 	if cancel, ok := m.enrichCancels[libraryID]; ok {
@@ -192,11 +208,24 @@ func (m *LibraryScanManager) start(libraryID int, path, libraryType string, iden
 	}
 
 	status, ok := m.jobs[libraryID]
-	if ok && (status.Phase == libraryScanPhaseQueued || status.Phase == libraryScanPhaseScanning) {
+	if ok && status.Phase == libraryScanPhaseScanning {
+		request := mergeScanStartRequest(m.reruns[libraryID], scanStartRequest{identify: identify, subpaths: normalizedSubpaths})
+		m.reruns[libraryID] = request
+		status.IdentifyRequested = status.IdentifyRequested || identify
+		m.jobs[libraryID] = status
+		result := m.statusLocked(libraryID)
+		m.mu.Unlock()
+		m.flushAllStatuses(true)
+		return result
+	}
+	if ok && status.Phase == libraryScanPhaseQueued {
 		status.IdentifyRequested = status.IdentifyRequested || identify
 		m.jobs[libraryID] = status
 		m.types[libraryID] = libraryType
 		m.paths[libraryID] = path
+		m.subpaths[libraryID] = mergeScanSubpaths(m.subpaths[libraryID], normalizedSubpaths)
+		m.debounceReady[libraryID] = false
+		m.scheduleDebounceLocked(libraryID)
 		result := m.statusLocked(libraryID)
 		m.mu.Unlock()
 		m.flushAllStatuses(true)
@@ -215,14 +244,54 @@ func (m *LibraryScanManager) start(libraryID int, path, libraryType string, iden
 	m.jobs[libraryID] = status
 	m.types[libraryID] = libraryType
 	m.paths[libraryID] = path
+	m.subpaths[libraryID] = normalizedSubpaths
+	m.debounceReady[libraryID] = false
 	delete(m.lastFlushed, libraryID)
+	m.scheduleDebounceLocked(libraryID)
 	result := m.statusLocked(libraryID)
 	m.mu.Unlock()
 
 	m.flushAllStatuses(true)
 	m.queueEstimate(libraryID, path, libraryType)
-	m.scheduleNext()
 	return result
+}
+
+func mergeScanStartRequest(current, incoming scanStartRequest) scanStartRequest {
+	return scanStartRequest{
+		identify: current.identify || incoming.identify,
+		subpaths: mergeScanSubpaths(current.subpaths, incoming.subpaths),
+	}
+}
+
+func mergeScanSubpaths(current, incoming []string) []string {
+	if len(current) == 0 {
+		if len(incoming) == 0 {
+			return nil
+		}
+		return append([]string(nil), incoming...)
+	}
+	if len(incoming) == 0 {
+		return nil
+	}
+	merged := append(append([]string(nil), current...), incoming...)
+	normalized, err := db.NormalizeScanSubpaths(merged)
+	if err != nil {
+		return nil
+	}
+	return normalized
+}
+
+func (m *LibraryScanManager) scheduleDebounceLocked(libraryID int) {
+	if timer, ok := m.debounceTimers[libraryID]; ok {
+		timer.Stop()
+	}
+	m.debounceTimers[libraryID] = time.AfterFunc(libraryScanDebounceWindow, func() {
+		m.mu.Lock()
+		delete(m.debounceTimers, libraryID)
+		m.debounceReady[libraryID] = true
+		m.mu.Unlock()
+		m.scheduleNext()
+	})
 }
 
 func (m *LibraryScanManager) queueEstimate(libraryID int, path, libraryType string) {
@@ -257,6 +326,16 @@ func (m *LibraryScanManager) status(libraryID int) libraryScanStatus {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	return m.statusLocked(libraryID)
+}
+
+func (m *LibraryScanManager) scanSubpaths(libraryID int) []string {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	subpaths := m.subpaths[libraryID]
+	if len(subpaths) == 0 {
+		return nil
+	}
+	return append([]string(nil), subpaths...)
 }
 
 func (m *LibraryScanManager) statusLocked(libraryID int) libraryScanStatus {
@@ -311,7 +390,7 @@ func (m *LibraryScanManager) scheduleNext() {
 }
 
 func (m *LibraryScanManager) nextQueuedLocked() (int, libraryScanStatus, string, string) {
-	queued := m.queuedLibrariesLocked()
+	queued := m.readyQueuedLibrariesLocked()
 	if len(queued) == 0 {
 		return 0, libraryScanStatus{}, "", ""
 	}
@@ -346,6 +425,18 @@ func (m *LibraryScanManager) queuedLibrariesLocked() []queuedLibrary {
 	return queued
 }
 
+func (m *LibraryScanManager) readyQueuedLibrariesLocked() []queuedLibrary {
+	all := m.queuedLibrariesLocked()
+	ready := make([]queuedLibrary, 0, len(all))
+	for _, item := range all {
+		if !m.debounceReady[item.id] {
+			continue
+		}
+		ready = append(ready, item)
+	}
+	return ready
+}
+
 func (m *LibraryScanManager) queuePositionLocked(libraryID int) int {
 	queued := m.queuedLibrariesLocked()
 	for idx, item := range queued {
@@ -357,10 +448,12 @@ func (m *LibraryScanManager) queuePositionLocked(libraryID int) int {
 }
 
 func (m *LibraryScanManager) run(libraryID int, status libraryScanStatus, libraryType, path string) {
+	subpaths := m.scanSubpaths(libraryID)
 	result, err := db.HandleScanLibraryWithOptions(context.Background(), m.db, path, libraryType, libraryID, db.ScanOptions{
 		ProbeMedia:             false,
 		ProbeEmbeddedSubtitles: false,
 		ScanSidecarSubtitles:   false,
+		Subpaths:               subpaths,
 		Progress: func(progress db.ScanProgress) {
 			m.updateProgress(libraryID, progress)
 		},
@@ -373,7 +466,7 @@ func (m *LibraryScanManager) run(libraryID int, status libraryScanStatus, librar
 	if status.IdentifyRequested && libraryType != db.LibraryTypeMusic {
 		m.startIdentify(libraryID)
 	}
-	m.startEnrichment(libraryID, libraryType, path)
+	m.startEnrichment(libraryID, libraryType, path, subpaths)
 }
 
 func (m *LibraryScanManager) updateProgress(libraryID int, progress db.ScanProgress) {
@@ -465,12 +558,31 @@ func (m *LibraryScanManager) finish(libraryID int, phase string, result db.ScanR
 	if m.activeScanID == libraryID {
 		m.activeScanID = 0
 	}
+	rerun, hasRerun := m.reruns[libraryID]
+	if phase == libraryScanPhaseCompleted && hasRerun {
+		delete(m.reruns, libraryID)
+		status.Phase = libraryScanPhaseQueued
+		status.IdentifyRequested = rerun.identify
+		status.QueuedAt = time.Now().UTC().Format(time.RFC3339)
+		status.FinishedAt = ""
+		status.Error = ""
+		status.Processed = 0
+		status.Added = 0
+		status.Updated = 0
+		status.Removed = 0
+		status.Unmatched = 0
+		status.Skipped = 0
+		m.jobs[libraryID] = status
+		m.subpaths[libraryID] = rerun.subpaths
+		m.debounceReady[libraryID] = false
+		m.scheduleDebounceLocked(libraryID)
+	}
 	m.mu.Unlock()
 	m.flushAllStatuses(true)
 	m.scheduleNext()
 }
 
-func (m *LibraryScanManager) startEnrichment(libraryID int, libraryType, path string) {
+func (m *LibraryScanManager) startEnrichment(libraryID int, libraryType, path string, subpaths []string) {
 	ctx, cancel := context.WithCancel(context.Background())
 
 	m.mu.Lock()
@@ -499,6 +611,7 @@ func (m *LibraryScanManager) startEnrichment(libraryID int, libraryType, path st
 			ProbeMedia:             true,
 			ProbeEmbeddedSubtitles: true,
 			ScanSidecarSubtitles:   true,
+			Subpaths:               subpaths,
 		}
 		if libraryType == db.LibraryTypeMusic && status.IdentifyRequested {
 			if musicIdentifier, ok := m.meta.(metadata.MusicIdentifier); ok {

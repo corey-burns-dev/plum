@@ -100,6 +100,10 @@ export interface MediaItem {
   metadata_confirmed?: boolean;
   /** Path to generated frame thumbnail (video episodes); served at /api/media/:id/thumbnail. */
   thumbnail_path?: string;
+  missing?: boolean;
+  missing_since?: string;
+  duplicate?: boolean;
+  duplicate_count?: number;
 }
 
 export const MediaItemSchema = Schema.Struct({
@@ -139,6 +143,10 @@ export const MediaItemSchema = Schema.Struct({
   metadata_review_needed: Schema.optional(Schema.Boolean),
   metadata_confirmed: Schema.optional(Schema.Boolean),
   thumbnail_path: Schema.optional(Schema.String),
+  missing: Schema.optional(Schema.Boolean),
+  missing_since: Schema.optional(Schema.String),
+  duplicate: Schema.optional(Schema.Boolean),
+  duplicate_count: Schema.optional(Schema.Number),
 });
 
 export interface UpdateMediaProgressPayload {

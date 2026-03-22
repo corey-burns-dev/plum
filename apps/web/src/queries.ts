@@ -120,11 +120,12 @@ export function useLibraryMedia(
 export function useScanLibrary(): UseMutationResult<
   ScanLibraryResult,
   Error,
-  { libraryId: number; identify?: boolean }
+  { libraryId: number; identify?: boolean; subpath?: string }
 > {
   const queryClient = useQueryClient();
   return useMutation({
-    mutationFn: ({ libraryId, identify }) => scanLibraryById(libraryId, { identify }),
+    mutationFn: ({ libraryId, identify, subpath }) =>
+      scanLibraryById(libraryId, { identify, subpath }),
     onSuccess: (_, { libraryId }) => {
       void queryClient.invalidateQueries({ queryKey: queryKeys.library(libraryId) });
       void queryClient.invalidateQueries({ queryKey: queryKeys.libraries });

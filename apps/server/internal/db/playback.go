@@ -58,19 +58,56 @@ func GetHomeDashboardForUser(db *sql.DB, userID int) (HomeDashboard, error) {
 	if err != nil {
 		return HomeDashboard{}, err
 	}
-	items, err = attachSubtitlesBatch(db, items)
+	items, err = attachPlaybackProgressBatch(db, userID, items)
 	if err != nil {
 		return HomeDashboard{}, err
 	}
-	items, err = attachPlaybackProgressBatch(db, userID, items)
+	continueWatching := buildContinueWatching(items)
+	recentlyAdded := buildRecentlyAdded(items)
+	continueWatching, recentlyAdded, err = attachDashboardEntrySubtitles(db, continueWatching, recentlyAdded)
 	if err != nil {
 		return HomeDashboard{}, err
 	}
 
 	return HomeDashboard{
-		ContinueWatching: buildContinueWatching(items),
-		RecentlyAdded:    buildRecentlyAdded(items),
+		ContinueWatching: continueWatching,
+		RecentlyAdded:    recentlyAdded,
 	}, nil
+}
+
+func attachDashboardEntrySubtitles(db *sql.DB, continueWatching []ContinueWatchingEntry, recentlyAdded []RecentlyAddedEntry) ([]ContinueWatchingEntry, []RecentlyAddedEntry, error) {
+	uniqueMedia := make(map[int]MediaItem, len(continueWatching)+len(recentlyAdded))
+	for i := range continueWatching {
+		uniqueMedia[continueWatching[i].Media.ID] = continueWatching[i].Media
+	}
+	for i := range recentlyAdded {
+		uniqueMedia[recentlyAdded[i].Media.ID] = recentlyAdded[i].Media
+	}
+
+	items := make([]MediaItem, 0, len(uniqueMedia))
+	for _, item := range uniqueMedia {
+		items = append(items, item)
+	}
+	items, err := attachSubtitlesBatch(db, items)
+	if err != nil {
+		return nil, nil, err
+	}
+
+	mediaByID := make(map[int]MediaItem, len(items))
+	for _, item := range items {
+		mediaByID[item.ID] = item
+	}
+	for i := range continueWatching {
+		if item, ok := mediaByID[continueWatching[i].Media.ID]; ok {
+			continueWatching[i].Media = item
+		}
+	}
+	for i := range recentlyAdded {
+		if item, ok := mediaByID[recentlyAdded[i].Media.ID]; ok {
+			recentlyAdded[i].Media = item
+		}
+	}
+	return continueWatching, recentlyAdded, nil
 }
 
 func buildContinueWatching(items []MediaItem) []ContinueWatchingEntry {

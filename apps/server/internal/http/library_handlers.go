@@ -953,12 +953,28 @@ func (h *LibraryHandler) ScanLibrary(w http.ResponseWriter, r *http.Request) {
 	}
 
 	identify := r.URL.Query().Get("identify") != "false"
+	subpaths, err := requestedScanSubpaths(r)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
 	var id metadata.Identifier
 	if identify {
 		id = h.Meta
 	}
 
-	added, err := db.HandleScanLibrary(r.Context(), h.DB, path, typ, libraryID, id)
+	var musicIdentifier metadata.MusicIdentifier
+	if detected, ok := id.(metadata.MusicIdentifier); ok {
+		musicIdentifier = detected
+	}
+	added, err := db.HandleScanLibraryWithOptions(r.Context(), h.DB, path, typ, libraryID, db.ScanOptions{
+		Identifier:             id,
+		MusicIdentifier:        musicIdentifier,
+		ProbeMedia:             true,
+		ProbeEmbeddedSubtitles: true,
+		ScanSidecarSubtitles:   true,
+		Subpaths:               subpaths,
+	})
 	if err != nil {
 		http.Error(w, "scan error: "+err.Error(), http.StatusInternalServerError)
 		return
@@ -983,10 +999,23 @@ func (h *LibraryHandler) StartLibraryScan(w http.ResponseWriter, r *http.Request
 	if !ok {
 		return
 	}
+	subpaths, err := requestedScanSubpaths(r)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
 
-	status := h.ScanJobs.start(libraryID, path, typ, r.URL.Query().Get("identify") != "false")
+	status := h.ScanJobs.start(libraryID, path, typ, r.URL.Query().Get("identify") != "false", subpaths)
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(status)
+}
+
+func requestedScanSubpaths(r *http.Request) ([]string, error) {
+	subpath := strings.TrimSpace(r.URL.Query().Get("subpath"))
+	if subpath == "" {
+		return nil, nil
+	}
+	return db.NormalizeScanSubpaths([]string{subpath})
 }
 
 func (h *LibraryHandler) GetLibraryScanStatus(w http.ResponseWriter, r *http.Request) {
