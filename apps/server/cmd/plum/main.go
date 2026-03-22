@@ -42,6 +42,7 @@ func main() {
 
 	pipeline := metadata.NewPipeline(tmdbKey, tvdbKey, omdbKey, musicBrainzContact)
 	pipeline.SetIMDbRatingProvider(&db.IMDbRatingStore{DB: sqlDB})
+	pipeline.SetProviderCache(db.NewMetadataProviderCacheStore(sqlDB))
 
 	hub := ws.NewHub()
 	go hub.Run()

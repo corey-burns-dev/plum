@@ -99,9 +99,9 @@ Goal: turn raw files into identifiable movies/shows and handle assets.
 - [x] TVDB integration
 - [x] OMDb integration
 - [x] provider ID storage
-- [ ] provider response cache
-- [ ] metadata refresh policy
-- [ ] metadata versioning
+- [x] provider response cache
+- [x] metadata refresh policy
+- [x] metadata versioning
 
 ### Matching engine
 
@@ -114,8 +114,8 @@ Goal: turn raw files into identifiable movies/shows and handle assets.
 ### Metadata storage
 
 - [x] movies table
-- [ ] shows table
-- [ ] seasons table
+- [x] shows table
+- [x] seasons table
 - [x] episodes table
 - [x] provider ID mappings
 

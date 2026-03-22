@@ -213,6 +213,10 @@ func InitDB(conn string) (*sql.DB, error) {
 		db.Close()
 		return nil, err
 	}
+	if err := ensureMetadataRefreshPolicyDefaults(db); err != nil {
+		db.Close()
+		return nil, err
+	}
 	return db, nil
 }
 
@@ -281,6 +285,47 @@ CREATE TABLE IF NOT EXISTS movies (
 CREATE INDEX IF NOT EXISTS idx_movies_library_id ON movies(library_id);
 CREATE UNIQUE INDEX IF NOT EXISTS idx_movies_library_path ON movies(library_id, path);
 
+CREATE TABLE IF NOT EXISTS shows (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  library_id INTEGER NOT NULL REFERENCES libraries(id) ON DELETE CASCADE,
+  kind TEXT NOT NULL CHECK (kind IN ('tv','anime')),
+  tmdb_id INTEGER,
+  tvdb_id TEXT,
+  title TEXT NOT NULL,
+  title_key TEXT NOT NULL,
+  overview TEXT,
+  poster_path TEXT,
+  backdrop_path TEXT,
+  first_air_date TEXT,
+  imdb_id TEXT,
+  imdb_rating REAL DEFAULT 0,
+  metadata_version INTEGER NOT NULL DEFAULT 1,
+  metadata_hash TEXT,
+  last_refreshed_at TEXT,
+  created_at DATETIME NOT NULL,
+  updated_at DATETIME NOT NULL
+);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_shows_library_kind_tmdb_id ON shows(library_id, kind, tmdb_id) WHERE tmdb_id IS NOT NULL AND tmdb_id > 0;
+CREATE UNIQUE INDEX IF NOT EXISTS idx_shows_library_kind_title_key ON shows(library_id, kind, title_key);
+CREATE INDEX IF NOT EXISTS idx_shows_library_kind ON shows(library_id, kind);
+
+CREATE TABLE IF NOT EXISTS seasons (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  show_id INTEGER NOT NULL REFERENCES shows(id) ON DELETE CASCADE,
+  season_number INTEGER NOT NULL,
+  title TEXT,
+  overview TEXT,
+  poster_path TEXT,
+  air_date TEXT,
+  metadata_version INTEGER NOT NULL DEFAULT 1,
+  metadata_hash TEXT,
+  last_refreshed_at TEXT,
+  created_at DATETIME NOT NULL,
+  updated_at DATETIME NOT NULL
+);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_seasons_show_number ON seasons(show_id, season_number);
+CREATE INDEX IF NOT EXISTS idx_seasons_show_id ON seasons(show_id);
+
 CREATE TABLE IF NOT EXISTS tv_episodes (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   library_id INTEGER NOT NULL REFERENCES libraries(id) ON DELETE CASCADE,
@@ -304,7 +349,12 @@ CREATE TABLE IF NOT EXISTS tv_episodes (
   imdb_id TEXT,
   imdb_rating REAL DEFAULT 0,
   metadata_review_needed INTEGER NOT NULL DEFAULT 0,
-  metadata_confirmed INTEGER NOT NULL DEFAULT 0
+  metadata_confirmed INTEGER NOT NULL DEFAULT 0,
+  show_id INTEGER REFERENCES shows(id) ON DELETE SET NULL,
+  season_id INTEGER REFERENCES seasons(id) ON DELETE SET NULL,
+  metadata_version INTEGER NOT NULL DEFAULT 1,
+  metadata_content_hash TEXT,
+  last_metadata_refresh_at TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_tv_episodes_library_id ON tv_episodes(library_id);
 CREATE UNIQUE INDEX IF NOT EXISTS idx_tv_episodes_library_path ON tv_episodes(library_id, path);
@@ -332,7 +382,12 @@ CREATE TABLE IF NOT EXISTS anime_episodes (
   imdb_id TEXT,
   imdb_rating REAL DEFAULT 0,
   metadata_review_needed INTEGER NOT NULL DEFAULT 0,
-  metadata_confirmed INTEGER NOT NULL DEFAULT 0
+  metadata_confirmed INTEGER NOT NULL DEFAULT 0,
+  show_id INTEGER REFERENCES shows(id) ON DELETE SET NULL,
+  season_id INTEGER REFERENCES seasons(id) ON DELETE SET NULL,
+  metadata_version INTEGER NOT NULL DEFAULT 1,
+  metadata_content_hash TEXT,
+  last_metadata_refresh_at TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_anime_episodes_library_id ON anime_episodes(library_id);
 CREATE UNIQUE INDEX IF NOT EXISTS idx_anime_episodes_library_path ON anime_episodes(library_id, path);
@@ -447,6 +502,24 @@ CREATE TABLE IF NOT EXISTS schema_migrations (
   name TEXT NOT NULL,
   applied_at DATETIME NOT NULL
 );
+
+CREATE TABLE IF NOT EXISTS metadata_provider_cache (
+  provider TEXT NOT NULL,
+  method TEXT NOT NULL,
+  url_path TEXT NOT NULL,
+  query_hash TEXT NOT NULL,
+  body_hash TEXT NOT NULL,
+  response_json BLOB NOT NULL,
+  fetched_at TEXT NOT NULL,
+  expires_at TEXT NOT NULL,
+  schema_version INTEGER NOT NULL DEFAULT 1,
+  content_hash TEXT NOT NULL,
+  status_code INTEGER NOT NULL,
+  last_accessed_at TEXT NOT NULL,
+  hit_count INTEGER NOT NULL DEFAULT 0,
+  PRIMARY KEY (provider, method, url_path, query_hash, body_hash)
+);
+CREATE INDEX IF NOT EXISTS idx_metadata_provider_cache_expires_at ON metadata_provider_cache(expires_at);
 `
 	if _, err := db.Exec(schema); err != nil {
 		return err
@@ -710,6 +783,108 @@ var schemaMigrations = []schemaMigration{
 				}
 			}
 			return nil
+		},
+	},
+	{
+		version: 14,
+		name:    "metadata_storage_entities_and_cache",
+		apply: func(ctx context.Context, tx *sql.Tx) error {
+			for _, stmt := range []string{
+				`CREATE TABLE IF NOT EXISTS shows (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  library_id INTEGER NOT NULL REFERENCES libraries(id) ON DELETE CASCADE,
+  kind TEXT NOT NULL CHECK (kind IN ('tv','anime')),
+  tmdb_id INTEGER,
+  tvdb_id TEXT,
+  title TEXT NOT NULL,
+  title_key TEXT NOT NULL,
+  overview TEXT,
+  poster_path TEXT,
+  backdrop_path TEXT,
+  first_air_date TEXT,
+  imdb_id TEXT,
+  imdb_rating REAL DEFAULT 0,
+  metadata_version INTEGER NOT NULL DEFAULT 1,
+  metadata_hash TEXT,
+  last_refreshed_at TEXT,
+  created_at DATETIME NOT NULL,
+  updated_at DATETIME NOT NULL
+)`,
+				`CREATE TABLE IF NOT EXISTS seasons (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  show_id INTEGER NOT NULL REFERENCES shows(id) ON DELETE CASCADE,
+  season_number INTEGER NOT NULL,
+  title TEXT,
+  overview TEXT,
+  poster_path TEXT,
+  air_date TEXT,
+  metadata_version INTEGER NOT NULL DEFAULT 1,
+  metadata_hash TEXT,
+  last_refreshed_at TEXT,
+  created_at DATETIME NOT NULL,
+  updated_at DATETIME NOT NULL
+)`,
+				`CREATE TABLE IF NOT EXISTS metadata_provider_cache (
+  provider TEXT NOT NULL,
+  method TEXT NOT NULL,
+  url_path TEXT NOT NULL,
+  query_hash TEXT NOT NULL,
+  body_hash TEXT NOT NULL,
+  response_json BLOB NOT NULL,
+  fetched_at TEXT NOT NULL,
+  expires_at TEXT NOT NULL,
+  schema_version INTEGER NOT NULL DEFAULT 1,
+  content_hash TEXT NOT NULL,
+  status_code INTEGER NOT NULL,
+  last_accessed_at TEXT NOT NULL,
+  hit_count INTEGER NOT NULL DEFAULT 0,
+  PRIMARY KEY (provider, method, url_path, query_hash, body_hash)
+)`,
+				`CREATE UNIQUE INDEX IF NOT EXISTS idx_shows_library_kind_tmdb_id ON shows(library_id, kind, tmdb_id) WHERE tmdb_id IS NOT NULL AND tmdb_id > 0`,
+				`CREATE UNIQUE INDEX IF NOT EXISTS idx_shows_library_kind_title_key ON shows(library_id, kind, title_key)`,
+				`CREATE INDEX IF NOT EXISTS idx_shows_library_kind ON shows(library_id, kind)`,
+				`CREATE UNIQUE INDEX IF NOT EXISTS idx_seasons_show_number ON seasons(show_id, season_number)`,
+				`CREATE INDEX IF NOT EXISTS idx_seasons_show_id ON seasons(show_id)`,
+				`CREATE INDEX IF NOT EXISTS idx_metadata_provider_cache_expires_at ON metadata_provider_cache(expires_at)`,
+			} {
+				if _, err := tx.ExecContext(ctx, stmt); err != nil {
+					return err
+				}
+			}
+			for _, table := range []string{"tv_episodes", "anime_episodes"} {
+				for _, column := range []struct {
+					name string
+					def  string
+				}{
+					{name: "show_id", def: "INTEGER REFERENCES shows(id) ON DELETE SET NULL"},
+					{name: "season_id", def: "INTEGER REFERENCES seasons(id) ON DELETE SET NULL"},
+					{name: "metadata_version", def: "INTEGER NOT NULL DEFAULT 1"},
+					{name: "metadata_content_hash", def: "TEXT"},
+					{name: "last_metadata_refresh_at", def: "TEXT"},
+				} {
+					if err := addColumnIfMissingTx(ctx, tx, table, column.name, column.def); err != nil {
+						return err
+					}
+				}
+			}
+			for _, stmt := range []string{
+				`CREATE INDEX IF NOT EXISTS idx_tv_episodes_show_id ON tv_episodes(show_id)`,
+				`CREATE INDEX IF NOT EXISTS idx_tv_episodes_season_id ON tv_episodes(season_id)`,
+				`CREATE INDEX IF NOT EXISTS idx_anime_episodes_show_id ON anime_episodes(show_id)`,
+				`CREATE INDEX IF NOT EXISTS idx_anime_episodes_season_id ON anime_episodes(season_id)`,
+			} {
+				if _, err := tx.ExecContext(ctx, stmt); err != nil {
+					return err
+				}
+			}
+			return nil
+		},
+	},
+	{
+		version: 15,
+		name:    "metadata_storage_backfill",
+		apply: func(ctx context.Context, tx *sql.Tx) error {
+			return backfillShowsAndSeasonsTx(ctx, tx)
 		},
 	},
 }
@@ -1006,6 +1181,8 @@ func ListIdentifiableByLibrary(db *sql.DB, libraryID int) ([]IdentificationRow, 
 	if table == "music_tracks" {
 		return nil, nil
 	}
+	policy := GetMetadataRefreshPolicy(db)
+	refreshBefore := time.Now().UTC().Add(-time.Duration(policy.ScanRefreshMinAgeHours) * time.Hour).Format(time.RFC3339)
 	var q string
 	var args []interface{}
 	if table == "tv_episodes" || table == "anime_episodes" {
@@ -1016,9 +1193,11 @@ WHERE m.library_id = ?
     COALESCE(m.match_status, '') != ? OR
     COALESCE(m.tmdb_id, 0) = 0 OR
     COALESCE(m.poster_path, '') = '' OR
-    COALESCE(m.imdb_id, '') = ''
+    COALESCE(m.imdb_id, '') = '' OR
+    COALESCE(m.last_metadata_refresh_at, '') = '' OR
+    COALESCE(m.last_metadata_refresh_at, '') <= ?
   )`
-		args = []interface{}{libraryID, MatchStatusIdentified}
+		args = []interface{}{libraryID, MatchStatusIdentified, refreshBefore}
 	} else {
 		q = `SELECT m.id, m.title, m.path FROM ` + table + ` m
 WHERE m.library_id = ?
@@ -1064,10 +1243,86 @@ func UpdateMediaMetadataWithReview(db *sql.DB, table string, refID int, title st
 
 // UpdateMediaMetadataWithState updates a single category row with identified metadata and episodic metadata state.
 func UpdateMediaMetadataWithState(db *sql.DB, table string, refID int, title string, overview, posterPath, backdropPath, releaseDate string, voteAvg float64, imdbID string, imdbRating float64, tmdbID int, tvdbID string, season, episode int, metadataReviewNeeded bool, metadataConfirmed bool) error {
+	contentHash := metadataHash(
+		title,
+		overview,
+		posterPath,
+		backdropPath,
+		releaseDate,
+		fmt.Sprintf("%.3f", voteAvg),
+		imdbID,
+		fmt.Sprintf("%.3f", imdbRating),
+		strconv.Itoa(tmdbID),
+		tvdbID,
+		strconv.Itoa(season),
+		strconv.Itoa(episode),
+	)
+	now := time.Now().UTC().Format(time.RFC3339)
 	if table == "tv_episodes" || table == "anime_episodes" {
-		_, err := db.Exec(`UPDATE `+table+` SET title = ?, match_status = ?, tmdb_id = ?, tvdb_id = ?, overview = ?, poster_path = ?, backdrop_path = ?, release_date = ?, vote_average = ?, imdb_id = ?, imdb_rating = ?, season = ?, episode = ?, metadata_review_needed = ?, metadata_confirmed = ? WHERE id = ?`,
-			title, MatchStatusIdentified, tmdbID, nullStr(tvdbID), nullStr(overview), nullStr(posterPath), nullStr(backdropPath), nullStr(releaseDate), nullFloat64(voteAvg), nullStr(imdbID), nullFloat64(imdbRating), season, episode, metadataReviewNeeded, metadataConfirmed, refID)
-		return err
+		ctx := context.Background()
+		tx, err := db.BeginTx(ctx, nil)
+		if err != nil {
+			return err
+		}
+		var libraryID int
+		if err := tx.QueryRowContext(ctx, `SELECT library_id FROM `+table+` WHERE id = ?`, refID).Scan(&libraryID); err != nil {
+			_ = tx.Rollback()
+			return err
+		}
+		showID, seasonID, err := upsertShowAndSeasonForEpisodeTx(ctx, tx, libraryID, table, tmdbID, tvdbID, title, overview, posterPath, backdropPath, releaseDate, imdbID, imdbRating, season)
+		if err != nil {
+			_ = tx.Rollback()
+			return err
+		}
+		_, err = tx.ExecContext(ctx, `UPDATE `+table+` SET
+title = ?,
+match_status = ?,
+tmdb_id = ?,
+tvdb_id = ?,
+overview = ?,
+poster_path = ?,
+backdrop_path = ?,
+release_date = ?,
+vote_average = ?,
+imdb_id = ?,
+imdb_rating = ?,
+season = ?,
+episode = ?,
+metadata_review_needed = ?,
+metadata_confirmed = ?,
+show_id = ?,
+season_id = ?,
+metadata_version = CASE WHEN COALESCE(metadata_content_hash, '') != ? THEN COALESCE(metadata_version, 1) + 1 ELSE COALESCE(metadata_version, 1) END,
+metadata_content_hash = ?,
+last_metadata_refresh_at = ?
+WHERE id = ?`,
+			title,
+			MatchStatusIdentified,
+			tmdbID,
+			nullStr(tvdbID),
+			nullStr(overview),
+			nullStr(posterPath),
+			nullStr(backdropPath),
+			nullStr(releaseDate),
+			nullFloat64(voteAvg),
+			nullStr(imdbID),
+			nullFloat64(imdbRating),
+			season,
+			episode,
+			metadataReviewNeeded,
+			metadataConfirmed,
+			nullInt(showID),
+			nullInt(seasonID),
+			contentHash,
+			contentHash,
+			now,
+			refID,
+		)
+		if err != nil {
+			_ = tx.Rollback()
+			return err
+		}
+		return tx.Commit()
 	}
 	_, err := db.Exec(`UPDATE `+table+` SET title = ?, match_status = ?, tmdb_id = ?, tvdb_id = ?, overview = ?, poster_path = ?, backdrop_path = ?, release_date = ?, vote_average = ?, imdb_id = ?, imdb_rating = ? WHERE id = ?`,
 		title, MatchStatusIdentified, tmdbID, nullStr(tvdbID), nullStr(overview), nullStr(posterPath), nullStr(backdropPath), nullStr(releaseDate), nullFloat64(voteAvg), nullStr(imdbID), nullFloat64(imdbRating), refID)

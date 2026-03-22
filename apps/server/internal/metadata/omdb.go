@@ -9,12 +9,14 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"time"
 )
 
 const omdbBaseURL = "https://www.omdbapi.com/"
 
 type OMDBClient struct {
 	APIKey string
+	cache  ProviderCache
 
 	mu           sync.RWMutex
 	ratingByIMDb map[string]float64
@@ -30,6 +32,13 @@ func NewOMDBClient(apiKey string) *OMDBClient {
 	}
 }
 
+func (c *OMDBClient) SetCache(cache ProviderCache) {
+	if c == nil {
+		return
+	}
+	c.cache = cache
+}
+
 func (c *OMDBClient) GetIMDbRatingByID(ctx context.Context, imdbID string) (float64, error) {
 	if c == nil || c.APIKey == "" || imdbID == "" {
 		return 0, nil
@@ -41,21 +50,16 @@ func (c *OMDBClient) GetIMDbRatingByID(ctx context.Context, imdbID string) (floa
 	}
 	c.mu.RUnlock()
 	u := fmt.Sprintf("%s?apikey=%s&i=%s", omdbBaseURL, url.QueryEscape(c.APIKey), url.QueryEscape(imdbID))
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u, nil)
+	resp, err := doCachedJSONRequest(ctx, http.DefaultClient, c.cache, "omdb", http.MethodGet, u, nil, nil, 30*24*time.Hour, 1)
 	if err != nil {
 		return 0, err
 	}
-	resp, err := http.DefaultClient.Do(req)
-	if err != nil {
-		return 0, err
-	}
-	defer resp.Body.Close()
 
 	var payload struct {
 		Response   string `json:"Response"`
 		IMDbRating string `json:"imdbRating"`
 	}
-	if err := json.NewDecoder(resp.Body).Decode(&payload); err != nil {
+	if err := json.Unmarshal(resp.Body, &payload); err != nil {
 		return 0, err
 	}
 	if !strings.EqualFold(payload.Response, "True") || payload.IMDbRating == "" || payload.IMDbRating == "N/A" {

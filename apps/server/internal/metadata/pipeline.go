@@ -13,6 +13,9 @@ type Pipeline struct {
 	imdbRatings           IMDbRatingProvider
 	musicProvider         MusicIdentifier
 	omdb                  *OMDBClient
+	tmdb                  *TMDBClient
+	tvdb                  []*TVDBClient
+	providerCache         ProviderCache
 }
 
 // NewPipeline builds a pipeline from API keys. Empty keys skip that provider.
@@ -23,6 +26,7 @@ func NewPipeline(tmdbKey, tvdbKey, omdbKey, musicBrainzContact string) *Pipeline
 	}
 	if tmdbKey != "" {
 		tmdb := NewTMDBClient(tmdbKey)
+		p.tmdb = tmdb
 		p.movieProvider = tmdb
 		p.seriesDetailsProvider = tmdb
 		if len(p.tvProviders) == 0 {
@@ -32,13 +36,30 @@ func NewPipeline(tmdbKey, tvdbKey, omdbKey, musicBrainzContact string) *Pipeline
 		}
 	}
 	if tvdbKey != "" {
-		p.tvProviders = append(p.tvProviders, NewTVDBClient(tvdbKey, ""))
+		tvdb := NewTVDBClient(tvdbKey, "")
+		p.tvdb = append(p.tvdb, tvdb)
+		p.tvProviders = append(p.tvProviders, tvdb)
 	}
 	return p
 }
 
 func (p *Pipeline) SetIMDbRatingProvider(provider IMDbRatingProvider) {
 	p.imdbRatings = provider
+}
+
+func (p *Pipeline) SetProviderCache(cache ProviderCache) {
+	p.providerCache = cache
+	if p.tmdb != nil {
+		p.tmdb.SetCache(cache)
+	}
+	for _, tvdb := range p.tvdb {
+		if tvdb != nil {
+			tvdb.SetCache(cache)
+		}
+	}
+	if p.omdb != nil {
+		p.omdb.SetCache(cache)
+	}
 }
 
 func (p *Pipeline) IdentifyMusic(ctx context.Context, info MusicInfo) *MusicMatchResult {
