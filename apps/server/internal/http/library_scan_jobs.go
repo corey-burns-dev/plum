@@ -264,7 +264,13 @@ func mergeScanStartRequest(current, incoming scanStartRequest) scanStartRequest 
 }
 
 func mergeScanSubpaths(current, incoming []string) []string {
-	if len(current) == 0 || len(incoming) == 0 {
+	if len(current) == 0 {
+		if len(incoming) == 0 {
+			return nil
+		}
+		return append([]string(nil), incoming...)
+	}
+	if len(incoming) == 0 {
 		return nil
 	}
 	merged := append(append([]string(nil), current...), incoming...)

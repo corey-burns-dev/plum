@@ -1320,7 +1320,7 @@ func TestHandleScanLibrary_PrunesRemovedFiles(t *testing.T) {
 	}
 }
 
-func TestHandleScanLibrary_StoresFileStateAndSkipsRehashWhenUnchanged(t *testing.T) {
+func TestHandleScanLibrary_StoresFileStateAndBackfillsMissingFileHashes(t *testing.T) {
 	dbConn := newTestDB(t)
 	tvLibID := getLibraryID(t, dbConn, "tv")
 
@@ -1355,6 +1355,16 @@ func TestHandleScanLibrary_StoresFileStateAndSkipsRehashWhenUnchanged(t *testing
 	}
 	if hashCalls != 1 {
 		t.Fatalf("hash calls = %d, want 1", hashCalls)
+	}
+
+	if _, err := dbConn.Exec(`UPDATE tv_episodes SET file_hash = NULL, file_hash_kind = NULL WHERE library_id = ?`, tvLibID); err != nil {
+		t.Fatalf("clear file hash: %v", err)
+	}
+	if _, err := HandleScanLibrary(context.Background(), dbConn, filepath.Join(tmp, "Show"), LibraryTypeTV, tvLibID, nil); err != nil {
+		t.Fatalf("third scan: %v", err)
+	}
+	if hashCalls != 2 {
+		t.Fatalf("hash calls after clearing file hash = %d, want 2", hashCalls)
 	}
 
 	var fileSize int64
@@ -1404,8 +1414,8 @@ func TestHandleScanLibrary_PartialScanMarksOnlyScopedRowsMissing(t *testing.T) {
 	if _, err := HandleScanLibrary(context.Background(), dbConn, tmp, LibraryTypeTV, tvLibID, nil); err != nil {
 		t.Fatalf("full scan: %v", err)
 	}
-	if err := os.Remove(showAFile); err != nil {
-		t.Fatalf("remove show A file: %v", err)
+	if err := os.RemoveAll(filepath.Join(tmp, "Show A")); err != nil {
+		t.Fatalf("remove show A tree: %v", err)
 	}
 
 	if _, err := HandleScanLibraryWithOptions(context.Background(), dbConn, tmp, LibraryTypeTV, tvLibID, ScanOptions{
@@ -1432,7 +1442,7 @@ func TestHandleScanLibrary_PartialScanMarksOnlyScopedRowsMissing(t *testing.T) {
 	}
 }
 
-func TestGetMediaByLibraryID_ExposesDuplicateAndMissingState(t *testing.T) {
+func TestGetMediaByLibraryID_ExposesDuplicateStateAndFiltersMissingRows(t *testing.T) {
 	dbConn := newTestDB(t)
 	movieLibID := getLibraryID(t, dbConn, "movie")
 
@@ -1475,23 +1485,17 @@ func TestGetMediaByLibraryID_ExposesDuplicateAndMissingState(t *testing.T) {
 	if err != nil {
 		t.Fatalf("get media by library after rescan: %v", err)
 	}
-	if len(items) != 2 {
+	if len(items) != 1 {
 		t.Fatalf("items after rescan = %+v", items)
 	}
-	var missingCount, duplicateCount int
-	for _, item := range items {
-		if item.Missing {
-			missingCount++
-		}
-		if item.Duplicate {
-			duplicateCount++
-		}
+	if items[0].Path != fileB {
+		t.Fatalf("remaining item = %+v", items[0])
 	}
-	if missingCount != 1 {
-		t.Fatalf("missingCount = %d", missingCount)
+	if items[0].Missing {
+		t.Fatalf("expected remaining item to be present: %+v", items[0])
 	}
-	if duplicateCount != 0 {
-		t.Fatalf("duplicateCount = %d", duplicateCount)
+	if items[0].Duplicate {
+		t.Fatalf("duplicateCount = %+v", items[0])
 	}
 }
 

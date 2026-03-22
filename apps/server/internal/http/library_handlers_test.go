@@ -1340,7 +1340,7 @@ func TestLibraryScanManager_RequeueDoesNotDuplicateQueuedJob(t *testing.T) {
 	}
 }
 
-func TestLibraryScanManager_MergesQueuedPartialSubpaths(t *testing.T) {
+func TestLibraryScanManager_PreservesRerunPartialSubpathsWhileScanning(t *testing.T) {
 	dbConn, err := db.InitDB(":memory:")
 	if err != nil {
 		t.Fatalf("init db: %v", err)
@@ -1348,12 +1348,15 @@ func TestLibraryScanManager_MergesQueuedPartialSubpaths(t *testing.T) {
 	t.Cleanup(func() { _ = dbConn.Close() })
 
 	scanJobs := NewLibraryScanManager(dbConn, nil, nil)
-	scanJobs.start(1, "/tv", db.LibraryTypeTV, false, []string{"Show A/Season 1"})
+	scanJobs.mu.Lock()
+	scanJobs.jobs[1] = libraryScanStatus{LibraryID: 1, Phase: libraryScanPhaseScanning}
+	scanJobs.mu.Unlock()
+
 	scanJobs.start(1, "/tv", db.LibraryTypeTV, false, []string{"Show A"})
 
-	got := scanJobs.subpaths[1]
+	got := scanJobs.reruns[1].subpaths
 	if len(got) != 1 || got[0] != "Show A" {
-		t.Fatalf("merged subpaths = %#v", got)
+		t.Fatalf("rerun subpaths = %#v", got)
 	}
 }
 

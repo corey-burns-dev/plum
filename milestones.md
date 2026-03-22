@@ -60,23 +60,23 @@ Goal: handle background work and detect media on disk.
 
 - [x] directory scanner
 - [x] recursive scanning
-- [ ] file change detection
+- [x] file change detection
 - [x] background scan jobs
 - [x] manual scan trigger
 - [ ] filesystem watcher
-- [ ] debounce scan triggers
-- [ ] partial folder scans
+- [x] debounce scan triggers
+- [x] partial folder scans
 - [ ] scan scheduling
 
 ### Media file model
 
 - [x] media files table
 - [x] file metadata storage
-- [ ] file hash calculation
+- [x] file hash calculation
 - [x] ffprobe integration
 - [x] stream detection (video/audio/subtitle)
-- [ ] missing file detection
-- [ ] duplicate detection
+- [x] missing file detection
+- [x] duplicate detection
 - [ ] media identity model (items vs files)
 
 ---

@@ -1466,25 +1466,25 @@ func queryMediaByLibraryID(db *sql.DB, libraryID int, kind string) ([]MediaItem,
 	q := `SELECT g.id, m.library_id, m.title, m.path, m.duration, COALESCE(m.file_size_bytes, 0), COALESCE(m.file_mod_time, ''), COALESCE(m.file_hash, ''), COALESCE(m.file_hash_kind, ''), COALESCE(m.missing_since, ''), m.match_status, m.tmdb_id, m.tvdb_id, m.overview, m.poster_path, m.backdrop_path, m.release_date, m.vote_average, m.imdb_id, m.imdb_rating
 FROM ` + table + ` m
 JOIN media_global g ON g.kind = ? AND g.ref_id = m.id
-WHERE m.library_id = ?
+WHERE m.library_id = ? AND COALESCE(m.missing_since, '') = ''
 ORDER BY g.id`
 	if table == "music_tracks" {
 		q = `SELECT g.id, m.library_id, m.title, m.path, m.duration, COALESCE(m.file_size_bytes, 0), COALESCE(m.file_mod_time, ''), COALESCE(m.file_hash, ''), COALESCE(m.file_hash_kind, ''), COALESCE(m.missing_since, ''), m.match_status, m.artist, m.album, m.album_artist, m.poster_path, COALESCE(m.disc_number, 0), COALESCE(m.track_number, 0), COALESCE(m.release_year, 0)
 FROM music_tracks m
 JOIN media_global g ON g.kind = 'music' AND g.ref_id = m.id
-WHERE m.library_id = ?
+WHERE m.library_id = ? AND COALESCE(m.missing_since, '') = ''
 ORDER BY g.id`
 	} else if table == "tv_episodes" || table == "anime_episodes" {
 		q = `SELECT g.id, m.library_id, m.title, m.path, m.duration, COALESCE(m.file_size_bytes, 0), COALESCE(m.file_mod_time, ''), COALESCE(m.file_hash, ''), COALESCE(m.file_hash_kind, ''), COALESCE(m.missing_since, ''), m.match_status, m.tmdb_id, m.tvdb_id, m.overview, m.poster_path, m.backdrop_path, m.release_date, m.vote_average, m.imdb_id, m.imdb_rating, COALESCE(m.season, 0), COALESCE(m.episode, 0), COALESCE(m.metadata_review_needed, 0), COALESCE(m.metadata_confirmed, 0), m.thumbnail_path
 FROM ` + table + ` m
 JOIN media_global g ON g.kind = ? AND g.ref_id = m.id
-WHERE m.library_id = ?
+WHERE m.library_id = ? AND COALESCE(m.missing_since, '') = ''
 ORDER BY g.id`
 	} else {
 		q = `SELECT g.id, m.library_id, m.title, m.path, m.duration, COALESCE(m.file_size_bytes, 0), COALESCE(m.file_mod_time, ''), COALESCE(m.file_hash, ''), COALESCE(m.file_hash_kind, ''), COALESCE(m.missing_since, ''), m.match_status, m.tmdb_id, m.tvdb_id, m.overview, m.poster_path, m.backdrop_path, m.release_date, m.vote_average, m.imdb_id, m.imdb_rating
 FROM ` + table + ` m
 JOIN media_global g ON g.kind = ? AND g.ref_id = m.id
-WHERE m.library_id = ?
+WHERE m.library_id = ? AND COALESCE(m.missing_since, '') = ''
 ORDER BY g.id`
 	}
 	var rows *sql.Rows
@@ -1987,7 +1987,7 @@ func HandleScanLibraryWithOptions(
 	if err != nil {
 		return result, err
 	}
-	scanRoots, err := resolveScanRoots(root, scanSubpaths)
+	scanRoots, markRoots, err := resolveScanRoots(root, scanSubpaths)
 	if err != nil {
 		return result, err
 	}
@@ -2027,7 +2027,9 @@ func HandleScanLibraryWithOptions(
 			isUnchanged := !isNew &&
 				existing.MissingSince == "" &&
 				existing.FileSizeBytes == candidate.Size &&
-				existing.FileModTime == candidate.ModTime
+				existing.FileModTime == candidate.ModTime &&
+				existing.FileHash != "" &&
+				existing.FileHashKind != ""
 
 			title := strings.TrimSuffix(candidate.Name, filepath.Ext(candidate.Name))
 			if title == "" {
@@ -2216,7 +2218,7 @@ func HandleScanLibraryWithOptions(
 			return result, err
 		}
 	}
-	if err := markMissingMedia(ctx, dbConn, table, kind, libraryID, scanRoots, seenPaths, now); err != nil {
+	if err := markMissingMedia(ctx, dbConn, table, kind, libraryID, markRoots, seenPaths, now); err != nil {
 		return result, err
 	}
 	emitProgress()
@@ -2262,29 +2264,28 @@ func isSubpath(parent, child string) bool {
 	return strings.HasPrefix(child, parent+string(os.PathSeparator))
 }
 
-func resolveScanRoots(root string, subpaths []string) ([]string, error) {
+func resolveScanRoots(root string, subpaths []string) ([]string, []string, error) {
 	if len(subpaths) == 0 {
-		return []string{root}, nil
+		return []string{root}, []string{root}, nil
 	}
 	roots := make([]string, 0, len(subpaths))
+	markRoots := make([]string, 0, len(subpaths))
 	for _, subpath := range subpaths {
 		scanRoot := filepath.Join(root, subpath)
+		markRoots = append(markRoots, scanRoot)
 		info, err := os.Stat(scanRoot)
 		if err != nil {
 			if errors.Is(err, os.ErrNotExist) {
 				continue
 			}
-			return nil, err
+			return nil, nil, err
 		}
 		if !info.IsDir() {
-			return nil, fmt.Errorf("scan subpath is not a directory: %s", subpath)
+			return nil, nil, fmt.Errorf("scan subpath is not a directory: %s", subpath)
 		}
 		roots = append(roots, scanRoot)
 	}
-	if len(roots) == 0 {
-		return nil, nil
-	}
-	return roots, nil
+	return roots, markRoots, nil
 }
 
 func applyMatchResultToMediaItem(item *MediaItem, res *metadata.MatchResult) {
