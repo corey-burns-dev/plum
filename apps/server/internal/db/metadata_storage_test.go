@@ -89,3 +89,58 @@ func TestUpdateMediaMetadataWithState_UpsertsShowSeasonAndVersions(t *testing.T)
 		t.Fatalf("expected versions to increase on metadata change: episode %d->%d show %d->%d season %d->%d", episodeVersion2, episodeVersion3, showVersion2, showVersion3, seasonVersion2, seasonVersion3)
 	}
 }
+
+func TestUpdateMediaMetadataWithState_DoesNotMergeDifferentTMDBShowsWithSameTitleKey(t *testing.T) {
+	dbConn := newTestDB(t)
+
+	now := time.Now().UTC().Format(time.RFC3339)
+	var userID int
+	if err := dbConn.QueryRow(`INSERT INTO users (email, password_hash, is_admin, created_at) VALUES (?, ?, ?, ?) RETURNING id`,
+		"meta@example.com", "hash", 1, now).Scan(&userID); err != nil {
+		t.Fatalf("insert user: %v", err)
+	}
+	var libraryID int
+	if err := dbConn.QueryRow(`INSERT INTO libraries (user_id, name, type, path, created_at) VALUES (?, ?, ?, ?, ?) RETURNING id`,
+		userID, "TV", LibraryTypeTV, "/tv", now).Scan(&libraryID); err != nil {
+		t.Fatalf("insert library: %v", err)
+	}
+	var refIDs [2]int
+	for i, title := range []string{
+		"Shared Show - S01E01 - Pilot",
+		"Shared Show - S01E02 - Second",
+	} {
+		if err := dbConn.QueryRow(`INSERT INTO tv_episodes (library_id, title, path, duration, match_status, season, episode) VALUES (?, ?, ?, ?, ?, ?, ?) RETURNING id`,
+			libraryID, title, "/tv/shared/"+title, 1800, MatchStatusLocal, 1, i+1).Scan(&refIDs[i]); err != nil {
+			t.Fatalf("insert episode %d: %v", i, err)
+		}
+	}
+
+	if err := UpdateMediaMetadataWithState(dbConn, "tv_episodes", refIDs[0], "Shared Show - S01E01 - Pilot", "overview a", "poster-a", "backdrop-a", "2020-01-01", 7.1, "tt0001", 7.6, 111, "", 1, 1, false, true); err != nil {
+		t.Fatalf("first metadata update: %v", err)
+	}
+	if err := UpdateMediaMetadataWithState(dbConn, "tv_episodes", refIDs[1], "Shared Show - S01E02 - Second", "overview b", "poster-b", "backdrop-b", "2020-01-08", 7.2, "tt0002", 7.7, 222, "", 1, 2, false, true); err != nil {
+		t.Fatalf("second metadata update: %v", err)
+	}
+
+	var showCount int
+	if err := dbConn.QueryRow(`SELECT COUNT(*) FROM shows WHERE library_id = ? AND kind = ?`, libraryID, LibraryTypeTV).Scan(&showCount); err != nil {
+		t.Fatalf("count shows: %v", err)
+	}
+	if showCount != 2 {
+		t.Fatalf("expected two distinct shows, got %d", showCount)
+	}
+
+	var showID1, showID2 int
+	if err := dbConn.QueryRow(`SELECT COALESCE(show_id, 0) FROM tv_episodes WHERE id = ?`, refIDs[0]).Scan(&showID1); err != nil {
+		t.Fatalf("query episode 1 show_id: %v", err)
+	}
+	if err := dbConn.QueryRow(`SELECT COALESCE(show_id, 0) FROM tv_episodes WHERE id = ?`, refIDs[1]).Scan(&showID2); err != nil {
+		t.Fatalf("query episode 2 show_id: %v", err)
+	}
+	if showID1 == 0 || showID2 == 0 {
+		t.Fatalf("expected show links to be set, got %d and %d", showID1, showID2)
+	}
+	if showID1 == showID2 {
+		t.Fatalf("expected distinct show rows, got shared show_id %d", showID1)
+	}
+}

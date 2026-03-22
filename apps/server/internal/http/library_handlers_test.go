@@ -116,6 +116,10 @@ type seriesQueryStub struct {
 	getEpisode func(context.Context, string, string, int, int) (*metadata.MatchResult, error)
 }
 
+type seriesDetailsStub struct {
+	getSeriesDetails func(context.Context, int) (*metadata.SeriesDetails, error)
+}
+
 func (s *seriesQueryStub) SearchTV(ctx context.Context, query string) ([]metadata.MatchResult, error) {
 	if s.searchTV == nil {
 		return nil, nil
@@ -134,6 +138,13 @@ func (s *seriesQueryStub) GetEpisode(
 		return nil, nil
 	}
 	return s.getEpisode(ctx, provider, seriesID, season, episode)
+}
+
+func (s *seriesDetailsStub) GetSeriesDetails(ctx context.Context, tmdbID int) (*metadata.SeriesDetails, error) {
+	if s.getSeriesDetails == nil {
+		return nil, nil
+	}
+	return s.getSeriesDetails(ctx, tmdbID)
 }
 
 func (s *identifyStub) IdentifyTV(ctx context.Context, info metadata.MediaInfo) *metadata.MatchResult {
@@ -823,6 +834,139 @@ func TestIdentifyShow_OnlyUpdatesEpisodesForMatchingYearQualifiedShowKey(t *test
 	}
 	if tmdbID2004 != 0 {
 		t.Fatalf("expected 2004 tmdb_id to remain unset, got %d", tmdbID2004)
+	}
+}
+
+func TestRefreshShow_UsesSeriesDetailsForCanonicalMetadata(t *testing.T) {
+	dbConn, err := db.InitDB(":memory:")
+	if err != nil {
+		t.Fatalf("init db: %v", err)
+	}
+	t.Cleanup(func() { _ = dbConn.Close() })
+
+	now := time.Now().UTC()
+	var userID int
+	if err := dbConn.QueryRow(`INSERT INTO users (email, password_hash, is_admin, created_at) VALUES (?, ?, 1, ?) RETURNING id`, "test@test.com", "hash", now).Scan(&userID); err != nil {
+		t.Fatalf("insert user: %v", err)
+	}
+	var libraryID int
+	if err := dbConn.QueryRow(`INSERT INTO libraries (user_id, name, type, path, created_at) VALUES (?, ?, ?, ?, ?) RETURNING id`, userID, "TV", db.LibraryTypeTV, "/tv", now).Scan(&libraryID); err != nil {
+		t.Fatalf("insert library: %v", err)
+	}
+	var episodeID int
+	if err := dbConn.QueryRow(`INSERT INTO tv_episodes (library_id, title, path, duration, match_status, tmdb_id, season, episode) VALUES (?, ?, ?, ?, ?, ?, ?, ?) RETURNING id`,
+		libraryID,
+		"Series Name - S01E01 - Episode One",
+		"/tv/Series Name/Season 1/Series Name - S01E01.mkv",
+		0,
+		db.MatchStatusUnmatched,
+		456,
+		1,
+		1,
+	).Scan(&episodeID); err != nil {
+		t.Fatalf("insert tv episode: %v", err)
+	}
+	if _, err := dbConn.Exec(`INSERT INTO media_global (kind, ref_id) VALUES (?, ?)`, db.LibraryTypeTV, episodeID); err != nil {
+		t.Fatalf("insert media global row: %v", err)
+	}
+
+	handler := &LibraryHandler{
+		DB: dbConn,
+		Series: &seriesDetailsStub{
+			getSeriesDetails: func(_ context.Context, tmdbID int) (*metadata.SeriesDetails, error) {
+				if tmdbID != 456 {
+					t.Fatalf("tmdbID = %d", tmdbID)
+				}
+				return &metadata.SeriesDetails{
+					Name:         "Series Name",
+					Overview:     "series overview",
+					PosterPath:   "series poster",
+					BackdropPath: "series backdrop",
+					FirstAirDate: "2024-01-01",
+					IMDbID:       "ttseries",
+				}, nil
+			},
+		},
+		SeriesQuery: &seriesQueryStub{
+			getEpisode: func(_ context.Context, provider, seriesID string, season, episode int) (*metadata.MatchResult, error) {
+				if provider != "tmdb" || seriesID != "456" {
+					t.Fatalf("unexpected provider/series = %q/%q", provider, seriesID)
+				}
+				if season != 1 || episode != 1 {
+					t.Fatalf("unexpected episode = S%02dE%02d", season, episode)
+				}
+				return &metadata.MatchResult{
+					Title:       "Series Name - S01E01 - Episode One",
+					Overview:    "episode overview",
+					PosterURL:   "episode poster",
+					BackdropURL: "episode backdrop",
+					ReleaseDate: "2024-01-02",
+					VoteAverage: 7.5,
+					IMDbID:      "ttepisode",
+					IMDbRating:  8.1,
+					Provider:    "tmdb",
+					ExternalID:  "456",
+				}, nil
+			},
+		},
+	}
+
+	body := strings.NewReader(`{"showKey":"tmdb-456"}`)
+	req := httptest.NewRequest(http.MethodPost, "/api/libraries/"+strconv.Itoa(libraryID)+"/shows/refresh", body)
+	req.Header.Set("Content-Type", "application/json")
+	rctx := chi.NewRouteContext()
+	rctx.URLParams.Add("id", strconv.Itoa(libraryID))
+	req = req.WithContext(context.WithValue(withUser(req.Context(), &db.User{ID: userID, IsAdmin: true}), chi.RouteCtxKey, rctx))
+	rec := httptest.NewRecorder()
+
+	handler.RefreshShow(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d body=%s", rec.Code, rec.Body.String())
+	}
+
+	var showID, seasonID int
+	if err := dbConn.QueryRow(`SELECT COALESCE(show_id, 0), COALESCE(season_id, 0) FROM tv_episodes WHERE id = ?`, episodeID).Scan(&showID, &seasonID); err != nil {
+		t.Fatalf("query episode links: %v", err)
+	}
+	if showID == 0 || seasonID == 0 {
+		t.Fatalf("expected show/season links, got show=%d season=%d", showID, seasonID)
+	}
+
+	var showTitle, showOverview, showPoster, showBackdrop, showFirstAir, showIMDbID string
+	if err := dbConn.QueryRow(`SELECT title, COALESCE(overview, ''), COALESCE(poster_path, ''), COALESCE(backdrop_path, ''), COALESCE(first_air_date, ''), COALESCE(imdb_id, '') FROM shows WHERE id = ?`, showID).
+		Scan(&showTitle, &showOverview, &showPoster, &showBackdrop, &showFirstAir, &showIMDbID); err != nil {
+		t.Fatalf("query show row: %v", err)
+	}
+	if showTitle != "Series Name" {
+		t.Fatalf("show title = %q", showTitle)
+	}
+	if showOverview != "series overview" || showPoster != "series poster" || showBackdrop != "series backdrop" || showFirstAir != "2024-01-01" || showIMDbID != "ttseries" {
+		t.Fatalf("unexpected show metadata: overview=%q poster=%q backdrop=%q first_air=%q imdb=%q", showOverview, showPoster, showBackdrop, showFirstAir, showIMDbID)
+	}
+
+	var seasonTitle, seasonOverview, seasonPoster, seasonAir string
+	if err := dbConn.QueryRow(`SELECT title, COALESCE(overview, ''), COALESCE(poster_path, ''), COALESCE(air_date, '') FROM seasons WHERE id = ?`, seasonID).
+		Scan(&seasonTitle, &seasonOverview, &seasonPoster, &seasonAir); err != nil {
+		t.Fatalf("query season row: %v", err)
+	}
+	if seasonTitle != "Season 1" {
+		t.Fatalf("season title = %q", seasonTitle)
+	}
+	if seasonOverview != "series overview" || seasonPoster != "series poster" || seasonAir != "2024-01-01" {
+		t.Fatalf("unexpected season metadata: overview=%q poster=%q air=%q", seasonOverview, seasonPoster, seasonAir)
+	}
+
+	var episodeTitle, episodeOverview, episodePoster, episodeBackdrop, releaseDate string
+	if err := dbConn.QueryRow(`SELECT title, COALESCE(overview, ''), COALESCE(poster_path, ''), COALESCE(backdrop_path, ''), COALESCE(release_date, '') FROM tv_episodes WHERE id = ?`, episodeID).
+		Scan(&episodeTitle, &episodeOverview, &episodePoster, &episodeBackdrop, &releaseDate); err != nil {
+		t.Fatalf("query episode row: %v", err)
+	}
+	if episodeTitle != "Series Name - S01E01 - Episode One" {
+		t.Fatalf("episode title = %q", episodeTitle)
+	}
+	if episodeOverview != "episode overview" || episodePoster != "episode poster" || episodeBackdrop != "episode backdrop" || releaseDate != "2024-01-02" {
+		t.Fatalf("unexpected episode metadata: overview=%q poster=%q backdrop=%q release=%q", episodeOverview, episodePoster, episodeBackdrop, releaseDate)
 	}
 }
 

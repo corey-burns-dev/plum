@@ -306,7 +306,7 @@ CREATE TABLE IF NOT EXISTS shows (
   updated_at DATETIME NOT NULL
 );
 CREATE UNIQUE INDEX IF NOT EXISTS idx_shows_library_kind_tmdb_id ON shows(library_id, kind, tmdb_id) WHERE tmdb_id IS NOT NULL AND tmdb_id > 0;
-CREATE UNIQUE INDEX IF NOT EXISTS idx_shows_library_kind_title_key ON shows(library_id, kind, title_key);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_shows_library_kind_title_key ON shows(library_id, kind, title_key) WHERE tmdb_id IS NULL OR tmdb_id <= 0;
 CREATE INDEX IF NOT EXISTS idx_shows_library_kind ON shows(library_id, kind);
 
 CREATE TABLE IF NOT EXISTS seasons (
@@ -841,7 +841,7 @@ var schemaMigrations = []schemaMigration{
   PRIMARY KEY (provider, method, url_path, query_hash, body_hash)
 )`,
 				`CREATE UNIQUE INDEX IF NOT EXISTS idx_shows_library_kind_tmdb_id ON shows(library_id, kind, tmdb_id) WHERE tmdb_id IS NOT NULL AND tmdb_id > 0`,
-				`CREATE UNIQUE INDEX IF NOT EXISTS idx_shows_library_kind_title_key ON shows(library_id, kind, title_key)`,
+				`CREATE UNIQUE INDEX IF NOT EXISTS idx_shows_library_kind_title_key ON shows(library_id, kind, title_key) WHERE tmdb_id IS NULL OR tmdb_id <= 0`,
 				`CREATE INDEX IF NOT EXISTS idx_shows_library_kind ON shows(library_id, kind)`,
 				`CREATE UNIQUE INDEX IF NOT EXISTS idx_seasons_show_number ON seasons(show_id, season_number)`,
 				`CREATE INDEX IF NOT EXISTS idx_seasons_show_id ON seasons(show_id)`,
@@ -885,6 +885,17 @@ var schemaMigrations = []schemaMigration{
 		name:    "metadata_storage_backfill",
 		apply: func(ctx context.Context, tx *sql.Tx) error {
 			return backfillShowsAndSeasonsTx(ctx, tx)
+		},
+	},
+	{
+		version: 16,
+		name:    "show_title_key_scoped_to_unmatched_rows",
+		apply: func(ctx context.Context, tx *sql.Tx) error {
+			if _, err := tx.ExecContext(ctx, `DROP INDEX IF EXISTS idx_shows_library_kind_title_key`); err != nil {
+				return err
+			}
+			_, err := tx.ExecContext(ctx, `CREATE UNIQUE INDEX IF NOT EXISTS idx_shows_library_kind_title_key ON shows(library_id, kind, title_key) WHERE tmdb_id IS NULL OR tmdb_id <= 0`)
+			return err
 		},
 	},
 }
@@ -1243,6 +1254,37 @@ func UpdateMediaMetadataWithReview(db *sql.DB, table string, refID int, title st
 
 // UpdateMediaMetadataWithState updates a single category row with identified metadata and episodic metadata state.
 func UpdateMediaMetadataWithState(db *sql.DB, table string, refID int, title string, overview, posterPath, backdropPath, releaseDate string, voteAvg float64, imdbID string, imdbRating float64, tmdbID int, tvdbID string, season, episode int, metadataReviewNeeded bool, metadataConfirmed bool) error {
+	return UpdateMediaMetadataWithCanonicalState(db, table, refID, title, overview, posterPath, backdropPath, releaseDate, voteAvg, imdbID, imdbRating, tmdbID, tvdbID, season, episode, CanonicalMetadata{
+		Title:        title,
+		Overview:     overview,
+		PosterPath:   posterPath,
+		BackdropPath: backdropPath,
+		ReleaseDate:  releaseDate,
+		IMDbID:       imdbID,
+		IMDbRating:   imdbRating,
+	}, metadataReviewNeeded, metadataConfirmed)
+}
+
+// UpdateMediaMetadataWithCanonicalState updates a single category row with separate canonical show/season metadata.
+func UpdateMediaMetadataWithCanonicalState(db *sql.DB, table string, refID int, title string, overview, posterPath, backdropPath, releaseDate string, voteAvg float64, imdbID string, imdbRating float64, tmdbID int, tvdbID string, season, episode int, canonical CanonicalMetadata, metadataReviewNeeded bool, metadataConfirmed bool) error {
+	if strings.TrimSpace(canonical.Title) == "" {
+		canonical.Title = title
+	}
+	if strings.TrimSpace(canonical.Overview) == "" {
+		canonical.Overview = overview
+	}
+	if strings.TrimSpace(canonical.PosterPath) == "" {
+		canonical.PosterPath = posterPath
+	}
+	if strings.TrimSpace(canonical.BackdropPath) == "" {
+		canonical.BackdropPath = backdropPath
+	}
+	if strings.TrimSpace(canonical.ReleaseDate) == "" {
+		canonical.ReleaseDate = releaseDate
+	}
+	if strings.TrimSpace(canonical.IMDbID) == "" {
+		canonical.IMDbID = imdbID
+	}
 	contentHash := metadataHash(
 		title,
 		overview,
@@ -1269,7 +1311,7 @@ func UpdateMediaMetadataWithState(db *sql.DB, table string, refID int, title str
 			_ = tx.Rollback()
 			return err
 		}
-		showID, seasonID, err := upsertShowAndSeasonForEpisodeTx(ctx, tx, libraryID, table, tmdbID, tvdbID, title, overview, posterPath, backdropPath, releaseDate, imdbID, imdbRating, season)
+		showID, seasonID, err := upsertShowAndSeasonTx(ctx, tx, libraryID, table, tmdbID, tvdbID, canonical, season)
 		if err != nil {
 			_ = tx.Rollback()
 			return err

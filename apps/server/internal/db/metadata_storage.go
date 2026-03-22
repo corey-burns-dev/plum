@@ -71,6 +71,16 @@ func metadataHash(parts ...string) string {
 	return hex.EncodeToString(h.Sum(nil))
 }
 
+type CanonicalMetadata struct {
+	Title        string
+	Overview     string
+	PosterPath   string
+	BackdropPath string
+	ReleaseDate  string
+	IMDbID       string
+	IMDbRating   float64
+}
+
 func showKindForTable(table string) string {
 	switch table {
 	case "tv_episodes":
@@ -98,14 +108,35 @@ func upsertShowAndSeasonForEpisodeTx(
 	imdbRating float64,
 	seasonNumber int,
 ) (int, int, error) {
+	return upsertShowAndSeasonTx(ctx, tx, libraryID, table, tmdbID, tvdbID, CanonicalMetadata{
+		Title:        title,
+		Overview:     overview,
+		PosterPath:   posterPath,
+		BackdropPath: backdropPath,
+		ReleaseDate:  releaseDate,
+		IMDbID:       imdbID,
+		IMDbRating:   imdbRating,
+	}, seasonNumber)
+}
+
+func upsertShowAndSeasonTx(
+	ctx context.Context,
+	tx *sql.Tx,
+	libraryID int,
+	table string,
+	tmdbID int,
+	tvdbID string,
+	canonical CanonicalMetadata,
+	seasonNumber int,
+) (int, int, error) {
 	kind := showKindForTable(table)
 	if kind == "" {
 		return 0, 0, nil
 	}
 	now := time.Now().UTC().Format(time.RFC3339)
-	showTitle := strings.TrimSpace(showNameFromTitle(title))
+	showTitle := strings.TrimSpace(showNameFromTitle(canonical.Title))
 	if showTitle == "" {
-		showTitle = strings.TrimSpace(title)
+		showTitle = strings.TrimSpace(canonical.Title)
 	}
 	titleKey := normalizeShowKeyTitle(showTitle)
 	if titleKey == "" {
@@ -116,12 +147,12 @@ func upsertShowAndSeasonForEpisodeTx(
 		strconvInt(tmdbID),
 		tvdbID,
 		showTitle,
-		overview,
-		posterPath,
-		backdropPath,
-		releaseDate,
-		imdbID,
-		fmt.Sprintf("%.3f", imdbRating),
+		canonical.Overview,
+		canonical.PosterPath,
+		canonical.BackdropPath,
+		canonical.ReleaseDate,
+		canonical.IMDbID,
+		fmt.Sprintf("%.3f", canonical.IMDbRating),
 	)
 
 	showID, err := findShowIDTx(ctx, tx, libraryID, kind, tmdbID, titleKey)
@@ -138,12 +169,12 @@ library_id, kind, tmdb_id, tvdb_id, title, title_key, overview, poster_path, bac
 			nullStr(tvdbID),
 			showTitle,
 			titleKey,
-			nullStr(overview),
-			nullStr(posterPath),
-			nullStr(backdropPath),
-			nullStr(releaseDate),
-			nullStr(imdbID),
-			nullFloat64(imdbRating),
+			nullStr(canonical.Overview),
+			nullStr(canonical.PosterPath),
+			nullStr(canonical.BackdropPath),
+			nullStr(canonical.ReleaseDate),
+			nullStr(canonical.IMDbID),
+			nullFloat64(canonical.IMDbRating),
 			showHash,
 			now,
 			now,
@@ -172,12 +203,12 @@ WHERE id = ?`,
 			nullStr(tvdbID),
 			showTitle,
 			titleKey,
-			nullStr(overview),
-			nullStr(posterPath),
-			nullStr(backdropPath),
-			nullStr(releaseDate),
-			nullStr(imdbID),
-			nullFloat64(imdbRating),
+			nullStr(canonical.Overview),
+			nullStr(canonical.PosterPath),
+			nullStr(canonical.BackdropPath),
+			nullStr(canonical.ReleaseDate),
+			nullStr(canonical.IMDbID),
+			nullFloat64(canonical.IMDbRating),
 			showHash,
 			showHash,
 			now,
@@ -190,9 +221,9 @@ WHERE id = ?`,
 
 	seasonHash := metadataHash(
 		strconvInt(seasonNumber),
-		overview,
-		posterPath,
-		releaseDate,
+		canonical.Overview,
+		canonical.PosterPath,
+		canonical.ReleaseDate,
 	)
 	seasonID, err := findSeasonIDTx(ctx, tx, showID, seasonNumber)
 	if err != nil {
@@ -206,9 +237,9 @@ show_id, season_number, title, overview, poster_path, air_date, metadata_version
 			showID,
 			seasonNumber,
 			seasonTitle,
-			nullStr(overview),
-			nullStr(posterPath),
-			nullStr(releaseDate),
+			nullStr(canonical.Overview),
+			nullStr(canonical.PosterPath),
+			nullStr(canonical.ReleaseDate),
 			seasonHash,
 			now,
 			now,
@@ -228,9 +259,9 @@ last_refreshed_at = ?,
 updated_at = ?
 WHERE id = ?`,
 			seasonDisplayTitle(seasonNumber),
-			nullStr(overview),
-			nullStr(posterPath),
-			nullStr(releaseDate),
+			nullStr(canonical.Overview),
+			nullStr(canonical.PosterPath),
+			nullStr(canonical.ReleaseDate),
 			seasonHash,
 			seasonHash,
 			now,
@@ -255,12 +286,16 @@ func findShowIDTx(ctx context.Context, tx *sql.Tx, libraryID int, kind string, t
 			return 0, err
 		}
 	}
-	err := tx.QueryRowContext(ctx, `SELECT id FROM shows WHERE library_id = ? AND kind = ? AND title_key = ? LIMIT 1`, libraryID, kind, titleKey).Scan(&showID)
+	var existingTMDBID int
+	err := tx.QueryRowContext(ctx, `SELECT id, COALESCE(tmdb_id, 0) FROM shows WHERE library_id = ? AND kind = ? AND title_key = ? LIMIT 1`, libraryID, kind, titleKey).Scan(&showID, &existingTMDBID)
 	if err != nil {
 		if err == sql.ErrNoRows {
 			return 0, nil
 		}
 		return 0, err
+	}
+	if tmdbID > 0 && existingTMDBID > 0 && existingTMDBID != tmdbID {
+		return 0, nil
 	}
 	return showID, nil
 }

@@ -51,6 +51,47 @@ func TestDoCachedJSONRequest_UsesPersistentCacheUntilExpiry(t *testing.T) {
 	}
 }
 
+func TestDoCachedJSONRequest_DoesNotCacheUnsuccessfulResponses(t *testing.T) {
+	cache := &inMemoryProviderCache{entries: make(map[string]*ProviderCacheEntry)}
+	var calls atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		call := calls.Add(1)
+		if call == 1 {
+			http.Error(w, "temporary failure", http.StatusInternalServerError)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]int32{"value": call})
+	}))
+	defer server.Close()
+
+	ctx := context.Background()
+	first, err := doCachedJSONRequest(ctx, http.DefaultClient, cache, "tmdb", http.MethodGet, server.URL+"/search?q=failure", nil, nil, time.Hour, 1)
+	if err != nil {
+		t.Fatalf("first request: %v", err)
+	}
+	if first.StatusCode != http.StatusInternalServerError {
+		t.Fatalf("first status = %d", first.StatusCode)
+	}
+	if len(cache.entries) != 0 {
+		t.Fatalf("expected no cache entry after failure, got %d", len(cache.entries))
+	}
+
+	second, err := doCachedJSONRequest(ctx, http.DefaultClient, cache, "tmdb", http.MethodGet, server.URL+"/search?q=failure", nil, nil, time.Hour, 1)
+	if err != nil {
+		t.Fatalf("second request: %v", err)
+	}
+	if second.StatusCode != http.StatusOK {
+		t.Fatalf("second status = %d", second.StatusCode)
+	}
+	if calls.Load() != 2 {
+		t.Fatalf("expected two upstream calls, got %d", calls.Load())
+	}
+	if len(cache.entries) != 1 {
+		t.Fatalf("expected one cached success, got %d", len(cache.entries))
+	}
+}
+
 type inMemoryProviderCache struct {
 	mu      sync.Mutex
 	entries map[string]*ProviderCacheEntry

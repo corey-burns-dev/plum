@@ -92,7 +92,7 @@ func doCachedJSONRequest(
 	if err != nil {
 		return nil, err
 	}
-	if cache != nil {
+	if cache != nil && resp.StatusCode >= http.StatusOK && resp.StatusCode < http.StatusMultipleChoices {
 		_ = cache.Put(ctx, key, ProviderCacheEntry{
 			ResponseJSON:  append([]byte(nil), rawBody...),
 			StatusCode:    resp.StatusCode,

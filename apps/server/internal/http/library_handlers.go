@@ -849,6 +849,20 @@ func (h *LibraryHandler) applyTMDBSeriesToRefs(
 	}
 	table := db.MediaTableForKind(refs[0].Kind)
 	seriesID := strconv.Itoa(seriesTMDBID)
+	var canonical db.CanonicalMetadata
+	if h.Series != nil {
+		if details, err := h.Series.GetSeriesDetails(ctx, seriesTMDBID); err == nil && details != nil {
+			canonical = db.CanonicalMetadata{
+				Title:        details.Name,
+				Overview:     details.Overview,
+				PosterPath:   details.PosterPath,
+				BackdropPath: details.BackdropPath,
+				ReleaseDate:  details.FirstAirDate,
+				IMDbID:       details.IMDbID,
+				IMDbRating:   details.IMDbRating,
+			}
+		}
+	}
 	updated := 0
 	for _, ref := range refs {
 		ep, err := h.SeriesQuery.GetEpisode(ctx, "tmdb", seriesID, ref.Season, ref.Episode)
@@ -859,7 +873,7 @@ func (h *LibraryHandler) applyTMDBSeriesToRefs(
 		if ep.Provider == "tvdb" {
 			tvdbID = ep.ExternalID
 		}
-		if err := db.UpdateMediaMetadataWithState(h.DB, table, ref.RefID, ep.Title, ep.Overview, ep.PosterURL, ep.BackdropURL, ep.ReleaseDate, ep.VoteAverage, ep.IMDbID, ep.IMDbRating, seriesTMDBID, tvdbID, ref.Season, ref.Episode, metadataReviewNeeded, metadataConfirmed); err != nil {
+		if err := db.UpdateMediaMetadataWithCanonicalState(h.DB, table, ref.RefID, ep.Title, ep.Overview, ep.PosterURL, ep.BackdropURL, ep.ReleaseDate, ep.VoteAverage, ep.IMDbID, ep.IMDbRating, seriesTMDBID, tvdbID, ref.Season, ref.Episode, canonical, metadataReviewNeeded, metadataConfirmed); err != nil {
 			continue
 		}
 		updated++
