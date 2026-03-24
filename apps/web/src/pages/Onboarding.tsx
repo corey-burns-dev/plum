@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import type { LibraryType } from "../api";
 import { createAdmin, createLibrary, getLibraryScanStatus, startLibraryScan } from "../api";
 import { useAuthActions } from "../contexts/AuthContext";
+import { getLibraryActivity, getLibraryActivityLabel } from "../lib/libraryActivity";
 
 type Step = "admin" | "library";
 
@@ -11,6 +12,7 @@ type AddedLibrary = {
   type: LibraryType;
   path: string;
   phase: "queued" | "scanning" | "completed" | "failed";
+  enriching: boolean;
   addedCount: number;
   updatedCount: number;
   removedCount: number;
@@ -46,6 +48,7 @@ function mergeLibraryScanStatus(
   return {
     ...library,
     phase: status.phase === "idle" ? "queued" : status.phase,
+    enriching: status.enriching,
     addedCount: status.added,
     updatedCount: status.updated,
     removedCount: status.removed,
@@ -72,7 +75,7 @@ export function Onboarding({ onGoToHome }: OnboardingProps) {
 
   useEffect(() => {
     const pendingLibraries = addedLibraries.filter(
-      (library) => library.phase === "queued" || library.phase === "scanning",
+      (library) => library.phase === "queued" || library.phase === "scanning" || library.enriching,
     );
     if (pendingLibraries.length === 0) return;
 
@@ -175,6 +178,7 @@ export function Onboarding({ onGoToHome }: OnboardingProps) {
             type: lib.type,
             path: lib.path,
             phase: "queued",
+            enriching: false,
             addedCount: 0,
             updatedCount: 0,
             removedCount: 0,
@@ -208,6 +212,7 @@ export function Onboarding({ onGoToHome }: OnboardingProps) {
           type: lib.type,
           path: lib.path,
           phase: "queued",
+          enriching: false,
           addedCount: 0,
           updatedCount: 0,
           removedCount: 0,
@@ -397,7 +402,15 @@ export function Onboarding({ onGoToHome }: OnboardingProps) {
                 <ul className="onboarding-libraries-list">
                   {addedLibraries.map((lib) => (
                     <li key={lib.id}>
-                      <strong>{lib.name}</strong> ({lib.type}) — import {lib.phase}
+                      <strong>{lib.name}</strong> ({lib.type}) —{" "}
+                      {(
+                        getLibraryActivityLabel(
+                          getLibraryActivity({
+                            scanPhase: lib.phase,
+                            enriching: lib.enriching,
+                          }),
+                        ) ?? lib.phase
+                      ).toLowerCase()}
                       {lib.addedCount > 0 ? `, added ${lib.addedCount}` : ""}
                       {lib.updatedCount > 0 ? `, updated ${lib.updatedCount}` : ""}
                       {lib.unmatchedCount > 0 ? `, unmatched ${lib.unmatchedCount}` : ""}

@@ -237,6 +237,67 @@ describe("App library and player wiring", () => {
     expect(screen.getByText(/2025/)).toBeTruthy();
   });
 
+  it("shows distinct sidebar status labels for importing and finishing libraries", async () => {
+    vi.spyOn(api, "listLibraries").mockResolvedValue([
+      { id: 1, name: "TV", type: "tv", path: "/tv", user_id: 1 },
+      { id: 3, name: "Music", type: "music", path: "/music", user_id: 1 },
+    ]);
+    vi.spyOn(api, "getLibraryScanStatus").mockImplementation(async (libraryId) => ({
+      libraryId,
+      phase: libraryId === 1 ? "scanning" : "completed",
+      enriching: libraryId === 3,
+      identifyPhase: "idle",
+      identified: 0,
+      identifyFailed: 0,
+      processed: libraryId === 1 ? 4 : 0,
+      added: libraryId === 1 ? 4 : 0,
+      updated: 0,
+      removed: 0,
+      unmatched: 0,
+      skipped: 0,
+      identifyRequested: false,
+      estimatedItems: 0,
+      queuePosition: libraryId === 1 ? 1 : 0,
+    }));
+    vi.spyOn(api, "fetchLibraryMedia").mockResolvedValue([]);
+
+    await renderApp("/library/1");
+
+    const tvLink = await screen.findByRole("link", { name: /TV/i });
+    expect(within(tvLink).getByText("Importing")).toBeVisible();
+
+    const musicLink = await screen.findByRole("link", { name: /Music/i });
+    expect(within(musicLink).getByText("Finishing")).toBeVisible();
+  });
+
+  it("shows finishing copy on the library page while background work completes", async () => {
+    vi.spyOn(api, "listLibraries").mockResolvedValue([
+      { id: 3, name: "Music", type: "music", path: "/music", user_id: 1 },
+    ]);
+    vi.spyOn(api, "getLibraryScanStatus").mockResolvedValue({
+      libraryId: 3,
+      phase: "completed",
+      enriching: true,
+      identifyPhase: "idle",
+      identified: 0,
+      identifyFailed: 0,
+      processed: 0,
+      added: 0,
+      updated: 0,
+      removed: 0,
+      unmatched: 0,
+      skipped: 0,
+      identifyRequested: false,
+      estimatedItems: 0,
+      queuePosition: 0,
+    });
+    vi.spyOn(api, "fetchLibraryMedia").mockResolvedValue([]);
+
+    await renderApp("/library/3");
+
+    expect(await screen.findByText("Finishing library…")).toBeTruthy();
+  });
+
   it("loads movie detail without fetching the entire library", async () => {
     vi.spyOn(api, "listLibraries").mockResolvedValue([
       { id: 2, name: "Movies", type: "movie", path: "/movies", user_id: 1 },
@@ -851,6 +912,7 @@ describe("App library and player wiring", () => {
       });
 
       expect(screen.getByTestId("library-identifying-1")).toBeTruthy();
+      expect(within(screen.getByRole("link", { name: /TV/i })).getByText("Identifying")).toBeVisible();
       const softRevealCard = screen.getByRole("link", { name: /Missing Show/i });
       expect(within(softRevealCard.closest(".show-card")!).getByText("Searching…")).toBeVisible();
 
@@ -1508,6 +1570,89 @@ describe("App library and player wiring", () => {
     fireEvent.click(screen.getByRole("button", { name: /Finish setup/i }));
 
     expect(await screen.findByText(/No media in this library yet/i)).toBeTruthy();
+  });
+
+  it("shows finishing state in onboarding import summaries", async () => {
+    mockAuthSession({ hasAdmin: false, user: null });
+    vi.spyOn(api, "getSetupStatus").mockResolvedValue({ hasAdmin: true });
+    vi.spyOn(api, "createAdmin").mockResolvedValue({
+      id: 1,
+      email: "admin@example.com",
+      is_admin: true,
+    });
+    vi.spyOn(api, "createLibrary").mockResolvedValue({
+      id: 10,
+      name: "TV",
+      type: "tv",
+      path: "/tv",
+      user_id: 1,
+    });
+    vi.spyOn(api, "startLibraryScan").mockResolvedValue({
+      libraryId: 10,
+      phase: "queued",
+      enriching: false,
+      identifyPhase: "idle",
+      identified: 0,
+      identifyFailed: 0,
+      processed: 0,
+      added: 0,
+      updated: 0,
+      removed: 0,
+      unmatched: 0,
+      skipped: 0,
+      identifyRequested: false,
+      estimatedItems: 0,
+      queuePosition: 1,
+      startedAt: new Date().toISOString(),
+    });
+    vi.spyOn(api, "getLibraryScanStatus").mockResolvedValue({
+      libraryId: 10,
+      phase: "completed",
+      enriching: true,
+      identifyPhase: "idle",
+      identified: 0,
+      identifyFailed: 0,
+      processed: 0,
+      added: 0,
+      updated: 0,
+      removed: 0,
+      unmatched: 0,
+      skipped: 0,
+      identifyRequested: false,
+      estimatedItems: 0,
+      queuePosition: 0,
+    });
+
+    await renderApp();
+
+    fireEvent.change(await screen.findByLabelText(/Email/i), {
+      target: { value: "admin@example.com" },
+    });
+    fireEvent.change(screen.getByLabelText(/^Password/i), {
+      target: { value: "passwordpassword" },
+    });
+    fireEvent.change(screen.getByLabelText(/Confirm password/i), {
+      target: { value: "passwordpassword" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: /Create admin/i }));
+
+    expect(await screen.findByRole("heading", { name: /Add libraries/i })).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: /Add libraries manually instead/i }));
+    fireEvent.change(screen.getByLabelText(/Library name/i), {
+      target: { value: "TV" },
+    });
+    fireEvent.change(screen.getByLabelText(/Folder path/i), {
+      target: { value: "/tv" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: /^Add library$/i }));
+
+    expect(
+      await screen.findByText(
+        (_, element) =>
+          element?.tagName.toLowerCase() === "li" &&
+          element.textContent === "TV (tv) — finishing",
+      ),
+    ).toBeTruthy();
   });
 
   it("auto-enters the app after adding default libraries with scan-only import", async () => {

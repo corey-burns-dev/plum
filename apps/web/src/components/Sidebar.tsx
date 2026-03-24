@@ -1,5 +1,6 @@
 import { Link, useLocation, useParams } from "react-router-dom";
 import { useLibraries } from "@/queries";
+import { getLibraryActivity, getLibraryActivityLabel } from "@/lib/libraryActivity";
 import { getLibraryTabLabel } from "@/lib/showGrouping";
 import { cn } from "@/lib/utils";
 import { Compass, Film, Home, Music, Tv } from "lucide-react";
@@ -60,17 +61,14 @@ export function Sidebar() {
             const isActive = activeId === lib.id;
             const identifyPhase = getLibraryPhase(lib.id);
             const scanStatus = getLibraryScanStatus(lib.id);
-            const scanPhase = scanStatus?.phase;
-            const isEnriching = scanStatus?.enriching === true;
-            const isAutoIdentifying =
-              scanStatus?.identifyPhase === "queued" || scanStatus?.identifyPhase === "identifying";
-            const isIdentifying =
-              identifyPhase === "identifying" || identifyPhase === "soft-reveal";
-            const isScanning =
-              scanPhase === "queued" ||
-              scanPhase === "scanning" ||
-              isEnriching ||
-              isAutoIdentifying;
+            const activity = getLibraryActivity({
+              scanPhase: scanStatus?.phase,
+              enriching: scanStatus?.enriching === true,
+              identifyPhase: scanStatus?.identifyPhase,
+              localIdentifyPhase: identifyPhase,
+            });
+            const activityLabel = getLibraryActivityLabel(activity);
+            const isBusy = activity != null;
             return (
               <Link
                 key={lib.id}
@@ -80,20 +78,25 @@ export function Sidebar() {
                   isActive
                     ? "bg-[var(--plum-accent-soft)] text-[var(--plum-accent)]"
                     : "text-[var(--plum-text)] hover:bg-[var(--plum-panel-alt)] hover:text-[var(--plum-text)]",
-                  (isIdentifying || isScanning) &&
+                  isBusy &&
                     "shadow-[inset_0_0_0_1px_rgba(244,90,160,0.2),0_0_18px_rgba(244,90,160,0.14)]",
                 )}
               >
                 <LibraryIcon lib={lib} />
-                <span className="truncate">{getLibraryTabLabel(lib)}</span>
-                {(isIdentifying || isScanning) && (
+                <span className="min-w-0 truncate">{getLibraryTabLabel(lib)}</span>
+                {activityLabel && (
                   <span
-                    className="relative ml-auto flex size-2.5 shrink-0 items-center justify-center"
+                    className="ml-auto flex shrink-0 items-center gap-1.5 text-[11px] uppercase tracking-[0.08em] text-[var(--plum-muted)]"
                     data-testid={`library-identifying-${lib.id}`}
-                    aria-hidden="true"
                   >
-                    <span className="absolute inline-flex size-full animate-ping rounded-full bg-[var(--plum-accent)] opacity-45" />
-                    <span className="relative size-2 rounded-full bg-[var(--plum-accent)] shadow-[0_0_10px_var(--plum-accent)]" />
+                    <span
+                      className="relative flex size-2.5 items-center justify-center"
+                      aria-hidden="true"
+                    >
+                      <span className="absolute inline-flex size-full animate-ping rounded-full bg-[var(--plum-accent)] opacity-45" />
+                      <span className="relative size-2 rounded-full bg-[var(--plum-accent)] shadow-[0_0_10px_var(--plum-accent)]" />
+                    </span>
+                    <span>{activityLabel}</span>
                   </span>
                 )}
               </Link>

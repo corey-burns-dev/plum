@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -1593,6 +1594,147 @@ func TestLibraryScanManager_RequeueDoesNotDuplicateQueuedJob(t *testing.T) {
 	status := scanJobs.status(2)
 	if status.QueuePosition != 2 {
 		t.Fatalf("queue position = %d", status.QueuePosition)
+	}
+}
+
+func TestLibraryScanManager_CompletedScanAdvancesQueueWhileFirstLibraryEnriches(t *testing.T) {
+	dbConn, err := db.InitDB(":memory:")
+	if err != nil {
+		t.Fatalf("init db: %v", err)
+	}
+	t.Cleanup(func() { _ = dbConn.Close() })
+
+	originalHandleScan := handleScanLibraryWithOptions
+	enrichmentStarted := make(chan struct{}, 1)
+	secondScanStarted := make(chan struct{}, 1)
+	releaseEnrichment := make(chan struct{})
+	var releaseOnce sync.Once
+	firstRoot := filepath.Join(t.TempDir(), "library-a")
+	secondRoot := filepath.Join(t.TempDir(), "library-b")
+	handleScanLibraryWithOptions = func(
+		ctx context.Context,
+		dbConn *sql.DB,
+		root, mediaType string,
+		libraryID int,
+		options db.ScanOptions,
+	) (db.ScanResult, error) {
+		if options.ProbeMedia {
+			if root == firstRoot {
+				select {
+				case enrichmentStarted <- struct{}{}:
+				default:
+				}
+				<-releaseEnrichment
+			}
+			return db.ScanResult{}, nil
+		}
+		if root == secondRoot {
+			select {
+			case secondScanStarted <- struct{}{}:
+			default:
+			}
+		}
+		return db.ScanResult{Added: 1}, nil
+	}
+	t.Cleanup(func() {
+		handleScanLibraryWithOptions = originalHandleScan
+		releaseOnce.Do(func() {
+			close(releaseEnrichment)
+		})
+	})
+
+	scanJobs := NewLibraryScanManager(dbConn, nil, nil)
+	scanJobs.start(1, firstRoot, db.LibraryTypeTV, false, nil)
+	scanJobs.start(2, secondRoot, db.LibraryTypeTV, false, nil)
+
+	select {
+	case <-enrichmentStarted:
+	case <-time.After(2 * time.Second):
+		t.Fatal("expected first library enrichment to start")
+	}
+
+	select {
+	case <-secondScanStarted:
+	case <-time.After(2 * time.Second):
+		t.Fatal("expected second library scan to start while first enriches")
+	}
+
+	firstStatus := scanJobs.status(1)
+	if firstStatus.Phase != libraryScanPhaseCompleted || !firstStatus.Enriching {
+		t.Fatalf("unexpected first status while second scans: %+v", firstStatus)
+	}
+	secondStatus := scanJobs.status(2)
+	if secondStatus.Phase != libraryScanPhaseScanning && secondStatus.Phase != libraryScanPhaseCompleted {
+		t.Fatalf("unexpected second status while first enriches: %+v", secondStatus)
+	}
+
+	releaseOnce.Do(func() {
+		close(releaseEnrichment)
+	})
+
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		status := scanJobs.status(1)
+		if !status.Enriching {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("expected first enrichment to finish, got %+v", status)
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+}
+
+func TestLibraryScanManager_EnrichmentFailureMarksJobFailedAndSchedulesRetry(t *testing.T) {
+	dbConn, err := db.InitDB(":memory:")
+	if err != nil {
+		t.Fatalf("init db: %v", err)
+	}
+	t.Cleanup(func() { _ = dbConn.Close() })
+
+	originalHandleScan := handleScanLibraryWithOptions
+	enrichErr := errors.New("hash failed")
+	handleScanLibraryWithOptions = func(
+		ctx context.Context,
+		dbConn *sql.DB,
+		root, mediaType string,
+		libraryID int,
+		options db.ScanOptions,
+	) (db.ScanResult, error) {
+		if options.ProbeMedia {
+			return db.ScanResult{}, enrichErr
+		}
+		return db.ScanResult{Added: 1}, nil
+	}
+	t.Cleanup(func() {
+		handleScanLibraryWithOptions = originalHandleScan
+	})
+
+	scanJobs := NewLibraryScanManager(dbConn, nil, nil)
+	scanJobs.start(1, "/tv", db.LibraryTypeTV, false, nil)
+
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		status := scanJobs.status(1)
+		if status.Phase == libraryScanPhaseFailed {
+			if status.Enriching {
+				t.Fatalf("expected enrichment to stop after failure, got %+v", status)
+			}
+			if status.Added != 1 || status.Processed != 1 {
+				t.Fatalf("expected discovery counts to be preserved, got %+v", status)
+			}
+			if status.Error != enrichErr.Error() {
+				t.Fatalf("error = %q, want %q", status.Error, enrichErr.Error())
+			}
+			if status.RetryCount != 1 || status.NextRetryAt == "" {
+				t.Fatalf("expected retry to be scheduled, got %+v", status)
+			}
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("expected enrichment failure to mark job failed, got %+v", status)
+		}
+		time.Sleep(20 * time.Millisecond)
 	}
 }
 

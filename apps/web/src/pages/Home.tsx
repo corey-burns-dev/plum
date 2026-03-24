@@ -14,6 +14,7 @@ import { MusicLibraryView } from "../components/MusicLibraryView";
 import { useIdentifyQueue, type IdentifyLibraryPhase } from "../contexts/IdentifyQueueContext";
 import { usePlayer } from "../contexts/PlayerContext";
 import { useScanQueue } from "../contexts/ScanQueueContext";
+import { getLibraryActivity } from "../lib/libraryActivity";
 import { formatEpisodeLabel, formatRemainingTime, shouldShowProgress } from "../lib/progress";
 import type { ShowGroup } from "../lib/showGrouping";
 import { groupMediaByShow } from "../lib/showGrouping";
@@ -130,6 +131,12 @@ export function Home() {
   );
   const selectedLibraryIdentifyPhase =
     getLibraryPhase(selectedLibraryId) ?? selectedLibraryBackendIdentifyPhase;
+  const selectedLibraryActivity = getLibraryActivity({
+    scanPhase: selectedLibraryScanStatus?.phase,
+    enriching: selectedLibraryScanStatus?.enriching === true,
+    identifyPhase: selectedLibraryScanStatus?.identifyPhase,
+    localIdentifyPhase: selectedLibraryIdentifyPhase,
+  });
   const isSelectedLibraryScanning =
     selectedLibraryScanStatus?.phase === "queued" ||
     selectedLibraryScanStatus?.phase === "scanning" ||
@@ -444,10 +451,14 @@ export function Home() {
                     Retry
                   </button>
                 </p>
-              ) : isSelectedLibraryScanning && selectedItems.length === 0 ? (
+              ) : selectedLibraryActivity != null && selectedItems.length === 0 ? (
                 <p className="text-sm text-[var(--plum-muted)]">
-                  Importing library…
-                  {selectedLibraryScanStatus && (
+                  {selectedLibraryActivity === "importing"
+                    ? "Importing library…"
+                    : selectedLibraryActivity === "finishing"
+                      ? "Finishing library…"
+                      : "Identifying library…"}
+                  {selectedLibraryActivity === "importing" && selectedLibraryScanStatus && (
                     <>
                       {" "}
                       {selectedLibraryScanStatus.processed} processed •{" "}
@@ -458,11 +469,7 @@ export function Home() {
               ) : selectedLibraryScanWarning ? (
                 <p className="text-sm text-[var(--plum-muted)]">{selectedLibraryScanWarning}</p>
               ) : selectedItems.length === 0 ? (
-                <p className="text-sm text-[var(--plum-muted)]">
-                  {isSelectedLibraryScanning
-                    ? "Importing library…"
-                    : "No media in this library yet."}
-                </p>
+                <p className="text-sm text-[var(--plum-muted)]">No media in this library yet.</p>
               ) : showIdentifyPlaceholder ? (
                 <p className="text-sm text-[var(--plum-muted)]">Identifying library…</p>
               ) : isTVOrAnime(selectedLib) ? (

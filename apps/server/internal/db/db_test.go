@@ -605,6 +605,63 @@ func TestHandleScanLibraryWithOptions_ProgressSeesImportedRowsBeforeCompletion(t
 	}
 }
 
+func TestHandleScanLibraryWithOptions_DeferredHashProgressDoesNotWaitForHash(t *testing.T) {
+	dbConn := newTestDB(t)
+	tvLibID := createLibraryForTest(t, dbConn, LibraryTypeTV, "/tv-progress")
+	root := t.TempDir()
+	showDir := filepath.Join(root, "Fast Show", "Season 1")
+	if err := os.MkdirAll(showDir, 0o755); err != nil {
+		t.Fatalf("mkdir show dir: %v", err)
+	}
+	for i := 1; i <= 2; i++ {
+		file := filepath.Join(showDir, fmt.Sprintf("Fast Show - S01E0%d.mkv", i))
+		if err := os.WriteFile(file, []byte("not a real video"), 0o644); err != nil {
+			t.Fatalf("write media file: %v", err)
+		}
+	}
+
+	prevHash := computeMediaHash
+	computeMediaHash = func(_ context.Context, path string) (string, error) {
+		t.Fatalf("deferred scan should not hash inline: %s", path)
+		return "", nil
+	}
+	defer func() { computeMediaHash = prevHash }()
+
+	visibleDuringProgress := false
+	result, err := HandleScanLibraryWithOptions(context.Background(), dbConn, root, LibraryTypeTV, tvLibID, ScanOptions{
+		HashMode: ScanHashModeDefer,
+		Progress: func(progress ScanProgress) {
+			if progress.Processed != 1 || visibleDuringProgress {
+				return
+			}
+			var count int
+			if err := dbConn.QueryRow(`SELECT COUNT(1) FROM tv_episodes WHERE library_id = ?`, tvLibID).Scan(&count); err != nil {
+				t.Fatalf("count imported rows during progress: %v", err)
+			}
+			if count > 0 {
+				visibleDuringProgress = true
+			}
+		},
+	})
+	if err != nil {
+		t.Fatalf("scan library: %v", err)
+	}
+	if result.Added != 2 {
+		t.Fatalf("added = %d, want 2", result.Added)
+	}
+	if !visibleDuringProgress {
+		t.Fatal("expected imported rows to be visible before scan completion")
+	}
+
+	var hashes int
+	if err := dbConn.QueryRow(`SELECT COUNT(1) FROM tv_episodes WHERE library_id = ? AND COALESCE(file_hash, '') != ''`, tvLibID).Scan(&hashes); err != nil {
+		t.Fatalf("count deferred hashes: %v", err)
+	}
+	if hashes != 0 {
+		t.Fatalf("expected no hashes during deferred scan, got %d", hashes)
+	}
+}
+
 // mockIdentifier returns fixed metadata for tests.
 type mockIdentifier struct {
 	tvResult    *metadata.MatchResult
@@ -1384,6 +1441,74 @@ func TestHandleScanLibrary_StoresFileStateAndBackfillsMissingFileHashes(t *testi
 	}
 	if missingSince != "" {
 		t.Fatalf("missing_since = %q", missingSince)
+	}
+}
+
+func TestHandleScanLibraryWithOptions_DeferredRescanBackfillsStableMissingHashes(t *testing.T) {
+	dbConn := newTestDB(t)
+	tvLibID := getLibraryID(t, dbConn, "tv")
+
+	tmp := t.TempDir()
+	showDir := filepath.Join(tmp, "Show", "Season 1")
+	if err := os.MkdirAll(showDir, 0o755); err != nil {
+		t.Fatalf("mkdir show dir: %v", err)
+	}
+	file := filepath.Join(showDir, "Show - S01E01.mkv")
+	if err := os.WriteFile(file, []byte("video-bytes"), 0o644); err != nil {
+		t.Fatalf("write file: %v", err)
+	}
+
+	prevSkip := SkipFFprobeInScan
+	prevHash := computeMediaHash
+	SkipFFprobeInScan = true
+	hashCalls := 0
+	computeMediaHash = func(_ context.Context, path string) (string, error) {
+		hashCalls++
+		return filepath.Base(path), nil
+	}
+	defer func() {
+		SkipFFprobeInScan = prevSkip
+		computeMediaHash = prevHash
+	}()
+
+	if _, err := HandleScanLibraryWithOptions(context.Background(), dbConn, filepath.Join(tmp, "Show"), LibraryTypeTV, tvLibID, ScanOptions{
+		HashMode: ScanHashModeDefer,
+	}); err != nil {
+		t.Fatalf("first deferred scan: %v", err)
+	}
+	if hashCalls != 0 {
+		t.Fatalf("hash calls during deferred scan = %d, want 0", hashCalls)
+	}
+
+	if _, err := HandleScanLibraryWithOptions(context.Background(), dbConn, filepath.Join(tmp, "Show"), LibraryTypeTV, tvLibID, ScanOptions{
+		HashMode: ScanHashModeDefer,
+	}); err != nil {
+		t.Fatalf("second deferred scan: %v", err)
+	}
+	if hashCalls != 1 {
+		t.Fatalf("hash calls during unchanged deferred rescan = %d, want 1", hashCalls)
+	}
+
+	var fileHash string
+	if err := dbConn.QueryRow(`SELECT COALESCE(file_hash, '') FROM tv_episodes WHERE library_id = ? AND path = ?`, tvLibID, file).Scan(&fileHash); err != nil {
+		t.Fatalf("query deferred hash: %v", err)
+	}
+	if fileHash != filepath.Base(file) {
+		t.Fatalf("expected deferred rescan hash %q, got %q", filepath.Base(file), fileHash)
+	}
+
+	if _, err := HandleScanLibrary(context.Background(), dbConn, filepath.Join(tmp, "Show"), LibraryTypeTV, tvLibID, nil); err != nil {
+		t.Fatalf("inline backfill scan: %v", err)
+	}
+	if hashCalls != 1 {
+		t.Fatalf("hash calls after inline backfill = %d, want 1", hashCalls)
+	}
+
+	if err := dbConn.QueryRow(`SELECT COALESCE(file_hash, '') FROM tv_episodes WHERE library_id = ? AND path = ?`, tvLibID, file).Scan(&fileHash); err != nil {
+		t.Fatalf("query backfilled hash: %v", err)
+	}
+	if fileHash != filepath.Base(file) {
+		t.Fatalf("expected backfilled hash %q, got %q", filepath.Base(file), fileHash)
 	}
 }
 

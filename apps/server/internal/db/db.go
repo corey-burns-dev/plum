@@ -47,6 +47,13 @@ type ScanProgress struct {
 	Result    ScanResult
 }
 
+type ScanHashMode string
+
+const (
+	ScanHashModeInline ScanHashMode = "inline"
+	ScanHashModeDefer  ScanHashMode = "defer"
+)
+
 type ScanOptions struct {
 	Identifier             metadata.Identifier
 	MusicIdentifier        metadata.MusicIdentifier
@@ -55,6 +62,7 @@ type ScanOptions struct {
 	ScanSidecarSubtitles   bool
 	Subpaths               []string
 	Progress               func(ScanProgress)
+	HashMode               ScanHashMode
 }
 
 var (
@@ -2652,6 +2660,10 @@ func HandleScanLibraryWithOptions(
 	probeMedia := options.ProbeMedia
 	probeEmbeddedSubtitleStreams := options.ProbeEmbeddedSubtitles && probeMedia
 	scanSidecarSubtitles := options.ScanSidecarSubtitles
+	hashMode := options.HashMode
+	if hashMode == "" {
+		hashMode = ScanHashModeInline
+	}
 	scanSubpaths, err := NormalizeScanSubpaths(options.Subpaths)
 	if err != nil {
 		return result, err
@@ -2693,10 +2705,12 @@ func HandleScanLibraryWithOptions(
 
 			existing := existingByPath[path]
 			isNew := existing.RefID == 0
-			isUnchanged := !isNew &&
+			hasStableFileState := !isNew &&
 				existing.MissingSince == "" &&
 				existing.FileSizeBytes == candidate.Size &&
-				existing.FileModTime == candidate.ModTime &&
+				existing.FileModTime == candidate.ModTime
+			isUnchanged := !isNew &&
+				hasStableFileState &&
 				existing.FileHash != "" &&
 				existing.FileHashKind != ""
 
@@ -2790,7 +2804,6 @@ func HandleScanLibraryWithOptions(
 				emitProgress()
 				return nil
 			}
-
 			if shouldIdentify {
 				mItem.MetadataReviewNeeded = false
 				mItem.MetadataConfirmed = false
@@ -2835,11 +2848,27 @@ func HandleScanLibraryWithOptions(
 				result.Unmatched++
 			}
 
-			if hash, err := computeMediaHash(ctx, path); err == nil {
-				mItem.FileHash = hash
-				mItem.FileHashKind = fileHashKindSHA256
+			itemHashMode := hashMode
+			needsHashBackfill := hashMode == ScanHashModeDefer &&
+				hasStableFileState &&
+				!shouldIdentify &&
+				!shouldIdentifyMusic &&
+				(existing.FileHash == "" || existing.FileHashKind == "")
+			if needsHashBackfill {
+				// A deferred discovery pass may have been interrupted before enrichment ran.
+				itemHashMode = ScanHashModeInline
+			}
+			if itemHashMode == ScanHashModeDefer {
+				// Discovery scans can defer hashing so rows become visible quickly.
+				mItem.FileHash = ""
+				mItem.FileHashKind = ""
 			} else {
-				return err
+				if hash, err := computeMediaHash(ctx, path); err == nil {
+					mItem.FileHash = hash
+					mItem.FileHashKind = fileHashKindSHA256
+				} else {
+					return err
+				}
 			}
 
 			globalID := existing.GlobalID

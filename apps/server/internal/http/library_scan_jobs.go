@@ -21,6 +21,7 @@ const (
 )
 
 var estimateLibraryFiles = db.EstimateLibraryFiles
+var handleScanLibraryWithOptions = db.HandleScanLibraryWithOptions
 
 const (
 	libraryScanPhaseIdle      = "idle"
@@ -524,11 +525,12 @@ func (m *LibraryScanManager) queuePositionLocked(libraryID int) int {
 
 func (m *LibraryScanManager) run(libraryID int, status libraryScanStatus, libraryType, path string) {
 	subpaths := m.scanSubpaths(libraryID)
-	result, err := db.HandleScanLibraryWithOptions(context.Background(), m.db, path, libraryType, libraryID, db.ScanOptions{
+	result, err := handleScanLibraryWithOptions(context.Background(), m.db, path, libraryType, libraryID, db.ScanOptions{
 		ProbeMedia:             false,
 		ProbeEmbeddedSubtitles: false,
 		ScanSidecarSubtitles:   false,
 		Subpaths:               subpaths,
+		HashMode:               db.ScanHashModeDefer,
 		Progress: func(progress db.ScanProgress) {
 			m.updateProgress(libraryID, progress)
 		},
@@ -709,9 +711,14 @@ func (m *LibraryScanManager) startEnrichment(libraryID int, libraryType, path st
 				options.MusicIdentifier = musicIdentifier
 			}
 		}
-		_, err := db.HandleScanLibraryWithOptions(ctx, m.db, path, libraryType, libraryID, options)
-		if err != nil && ctx.Err() == nil {
-			// Enrichment is best-effort; preserve browseability and just stop tracking.
+		_, err := handleScanLibraryWithOptions(ctx, m.db, path, libraryType, libraryID, options)
+		if err != nil {
+			if ctx.Err() == nil {
+				m.failEnrichment(libraryID, err.Error())
+				return
+			}
+			m.finishEnrichment(libraryID)
+			return
 		}
 		m.finishEnrichment(libraryID)
 	}()
@@ -743,6 +750,28 @@ func (m *LibraryScanManager) finishEnrichment(libraryID int) {
 	}
 	m.mu.Unlock()
 	m.flushStatus(libraryID, true)
+}
+
+func (m *LibraryScanManager) failEnrichment(libraryID int, errText string) {
+	m.mu.Lock()
+	status, ok := m.jobs[libraryID]
+	if !ok {
+		m.mu.Unlock()
+		return
+	}
+	status.Phase = libraryScanPhaseFailed
+	status.Enriching = false
+	status.Error = errText
+	status.LastError = errText
+	status.FinishedAt = time.Now().UTC().Format(time.RFC3339)
+	m.jobs[libraryID] = status
+	if cancel, ok := m.enrichCancels[libraryID]; ok {
+		cancel()
+		delete(m.enrichCancels, libraryID)
+	}
+	m.mu.Unlock()
+	m.flushStatus(libraryID, true)
+	_ = m.scheduleRetry(libraryID, false, errText)
 }
 
 func (m *LibraryScanManager) flushAllStatuses(force bool) {
