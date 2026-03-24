@@ -10,6 +10,7 @@ type Pipeline struct {
 	movieProvider         MovieProvider
 	tvProviders           []TVProvider
 	seriesDetailsProvider SeriesDetailsProvider
+	discoverProvider      DiscoverProvider
 	imdbRatings           IMDbRatingProvider
 	musicProvider         MusicIdentifier
 	omdb                  *OMDBClient
@@ -29,6 +30,7 @@ func NewPipeline(tmdbKey, tvdbKey, omdbKey, musicBrainzContact string) *Pipeline
 		p.tmdb = tmdb
 		p.movieProvider = tmdb
 		p.seriesDetailsProvider = tmdb
+		p.discoverProvider = tmdb
 		if len(p.tvProviders) == 0 {
 			p.tvProviders = []TVProvider{tmdb}
 		} else {
@@ -67,6 +69,36 @@ func (p *Pipeline) IdentifyMusic(ctx context.Context, info MusicInfo) *MusicMatc
 		return nil
 	}
 	return p.musicProvider.IdentifyMusic(ctx, info)
+}
+
+func (p *Pipeline) GetDiscover(ctx context.Context) (*DiscoverResponse, error) {
+	if p.discoverProvider == nil {
+		return nil, ErrTMDBNotConfigured
+	}
+	return p.discoverProvider.GetDiscover(ctx)
+}
+
+func (p *Pipeline) SearchDiscover(ctx context.Context, query string) (*DiscoverSearchResponse, error) {
+	if p.discoverProvider == nil {
+		return nil, ErrTMDBNotConfigured
+	}
+	return p.discoverProvider.SearchDiscover(ctx, query)
+}
+
+func (p *Pipeline) GetDiscoverTitleDetails(ctx context.Context, mediaType DiscoverMediaType, tmdbID int) (*DiscoverTitleDetails, error) {
+	if p.discoverProvider == nil {
+		return nil, ErrTMDBNotConfigured
+	}
+	details, err := p.discoverProvider.GetDiscoverTitleDetails(ctx, mediaType, tmdbID)
+	if err != nil || details == nil {
+		return details, err
+	}
+	if p.imdbRatings != nil && details.IMDbID != "" {
+		if rating, ratingErr := p.imdbRatings.GetIMDbRatingByID(ctx, details.IMDbID); ratingErr == nil && rating > 0 {
+			details.IMDbRating = rating
+		}
+	}
+	return details, nil
 }
 
 // IdentifyMovie returns the best movie match using scorer and confidence threshold.

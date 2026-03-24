@@ -70,6 +70,21 @@ func TestBuildRouter_WebSocketAllowsAuthenticatedAllowedOrigin(t *testing.T) {
 	}
 }
 
+func TestBuildRouter_DiscoverRequiresAuthentication(t *testing.T) {
+	serverURL, _, cleanup := testServer(t)
+	defer cleanup()
+
+	resp, err := http.Get(serverURL + "/api/discover")
+	if err != nil {
+		t.Fatalf("get discover: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("status = %d", resp.StatusCode)
+	}
+}
+
 func testServer(t *testing.T) (string, *sql.DB, func()) {
 	t.Helper()
 	t.Setenv("PLUM_ALLOWED_ORIGINS", "http://allowed.example")

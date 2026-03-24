@@ -3,6 +3,14 @@ import type {
   CreateLibraryPayload,
   CredentialsPayload,
   CreatePlaybackSessionPayload,
+  DiscoverItem,
+  DiscoverLibraryMatch,
+  DiscoverMediaType,
+  DiscoverResponse,
+  DiscoverSearchResponse,
+  DiscoverShelf,
+  DiscoverTitleDetails,
+  DiscoverTitleVideo,
   DetachPlaybackSessionCommand,
   EmbeddedAudioTrack,
   EmbeddedSubtitle,
@@ -39,6 +47,9 @@ import {
   CreateLibraryPayloadSchema,
   CredentialsPayloadSchema,
   CreatePlaybackSessionPayloadSchema,
+  DiscoverResponseSchema,
+  DiscoverSearchResponseSchema,
+  DiscoverTitleDetailsSchema,
   DetachPlaybackSessionCommandSchema,
   HomeDashboardSchema,
   IdentifyResultSchema,
@@ -69,6 +80,14 @@ export type {
   CreateLibraryPayload,
   CredentialsPayload,
   CreatePlaybackSessionPayload,
+  DiscoverItem,
+  DiscoverLibraryMatch,
+  DiscoverMediaType,
+  DiscoverResponse,
+  DiscoverSearchResponse,
+  DiscoverShelf,
+  DiscoverTitleDetails,
+  DiscoverTitleVideo,
   DetachPlaybackSessionCommand,
   EmbeddedAudioTrack,
   EmbeddedSubtitle,
@@ -634,6 +653,37 @@ export function createPlumApiClient(options: CreatePlumApiClientOptions) {
               ? failHttpEffect(response, "GET", url, ({ status }) => `Series: ${status}`)
               : null,
       }),
+    getDiscover: () =>
+      jsonRequestEffect({
+        path: "/api/discover",
+        schema: DiscoverResponseSchema,
+        errorMessage: ({ status, body }) => body || `Discover: ${status}`,
+      }),
+    searchDiscover: (query: string) => {
+      const trimmed = query.trim();
+      if (trimmed.length < 2) {
+        return Effect.succeed<DiscoverSearchResponse>({
+          movies: [],
+          tv: [],
+        });
+      }
+      return jsonRequestEffect({
+        path: `/api/discover/search?q=${encodeURIComponent(trimmed)}`,
+        schema: DiscoverSearchResponseSchema,
+        errorMessage: ({ status, body }) => body || `Discover search: ${status}`,
+      });
+    },
+    getDiscoverTitleDetails: (mediaType: DiscoverMediaType, tmdbId: number) =>
+      jsonRequestEffect({
+        path: `/api/discover/${mediaType}/${tmdbId}`,
+        schema: Schema.NullOr(DiscoverTitleDetailsSchema),
+        handleResponse: (response, url) =>
+          response.status === 404
+            ? Effect.succeed<DiscoverTitleDetails | null>(null)
+            : !response.ok
+              ? failHttpEffect(response, "GET", url, ({ status, body }) => body || `Discover title: ${status}`)
+              : null,
+      }),
     fetchLibraryMedia: (id: number) =>
       jsonRequestEffect({
         path: `/api/libraries/${id}/media`,
@@ -813,6 +863,10 @@ export function createPlumApiClient(options: CreatePlumApiClientOptions) {
     identifyLibrary: (id: number, options?: { readonly signal?: AbortSignal }) =>
       run(effects.identifyLibrary(id, options)),
     fetchSeriesByTmdbId: (tmdbId: number) => run(effects.fetchSeriesByTmdbId(tmdbId)),
+    getDiscover: () => run(effects.getDiscover()),
+    searchDiscover: (query: string) => run(effects.searchDiscover(query)),
+    getDiscoverTitleDetails: (mediaType: DiscoverMediaType, tmdbId: number) =>
+      run(effects.getDiscoverTitleDetails(mediaType, tmdbId)),
     fetchLibraryMedia: (id: number) => run(effects.fetchLibraryMedia(id)),
     getHomeDashboard: () => run(effects.getHomeDashboard()),
     fetchMediaList: () => run(effects.fetchMediaList()),
