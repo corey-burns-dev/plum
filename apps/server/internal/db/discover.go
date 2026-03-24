@@ -136,24 +136,6 @@ func discoverTVMatches(dbConn *sql.DB, userID int, tmdbIDs []int) (map[int][]met
 		return rows.Err()
 	}
 
-	showArgs := make([]any, 0, len(ids)+3)
-	showArgs = append(showArgs, userID, LibraryTypeTV, LibraryTypeAnime)
-	for _, id := range ids {
-		showArgs = append(showArgs, id)
-	}
-	showQuery := fmt.Sprintf(
-		`SELECT COALESCE(s.tmdb_id, 0), l.id, l.name, l.type
-FROM shows s
-JOIN libraries l ON l.id = s.library_id
-WHERE l.user_id = ? AND s.kind IN (?, ?) AND COALESCE(s.tmdb_id, 0) IN (%s)
-GROUP BY COALESCE(s.tmdb_id, 0), l.id, l.name, l.type
-ORDER BY l.name, l.id`,
-		intPlaceholders(len(ids)),
-	)
-	if err := appendMatches(showQuery, showArgs); err != nil {
-		return nil, err
-	}
-
 	tvArgs := make([]any, 0, len(ids)+1)
 	tvArgs = append(tvArgs, userID)
 	for _, id := range ids {

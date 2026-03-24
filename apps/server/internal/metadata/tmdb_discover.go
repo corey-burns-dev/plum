@@ -3,6 +3,7 @@ package metadata
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/url"
@@ -75,6 +76,19 @@ type tmdbTVDetailResponse struct {
 	NumberOfEpisodes int                `json:"number_of_episodes"`
 	Genres           []tmdbGenre        `json:"genres"`
 	Videos           tmdbVideosResponse `json:"videos"`
+}
+
+type tmdbDiscoverHTTPError struct {
+	StatusCode int
+}
+
+func (e *tmdbDiscoverHTTPError) Error() string {
+	return fmt.Sprintf("tmdb discover: status %d", e.StatusCode)
+}
+
+func isTMDBDiscoverHTTPStatus(err error, statusCode int) bool {
+	var httpErr *tmdbDiscoverHTTPError
+	return errors.As(err, &httpErr) && httpErr.StatusCode == statusCode
 }
 
 func (c *TMDBClient) GetDiscover(ctx context.Context) (*DiscoverResponse, error) {
@@ -165,6 +179,9 @@ func (c *TMDBClient) GetDiscoverTitleDetails(ctx context.Context, mediaType Disc
 		if err := c.fetchJSON(ctx, c.discoverURL(fmt.Sprintf("/movie/%d", tmdbID), map[string]string{
 			"append_to_response": "videos",
 		}), tmdbDiscoverDetailTTL, &payload); err != nil {
+			if isTMDBDiscoverHTTPStatus(err, http.StatusNotFound) {
+				return nil, nil
+			}
 			return nil, err
 		}
 		imdbID, _ := c.getMovieIMDbID(ctx, tmdbID)
@@ -188,6 +205,9 @@ func (c *TMDBClient) GetDiscoverTitleDetails(ctx context.Context, mediaType Disc
 		if err := c.fetchJSON(ctx, c.discoverURL(fmt.Sprintf("/tv/%d", tmdbID), map[string]string{
 			"append_to_response": "videos",
 		}), tmdbDiscoverDetailTTL, &payload); err != nil {
+			if isTMDBDiscoverHTTPStatus(err, http.StatusNotFound) {
+				return nil, nil
+			}
 			return nil, err
 		}
 		imdbID, _ := c.getTVIMDbID(ctx, tmdbID)
@@ -260,6 +280,9 @@ func (c *TMDBClient) fetchJSON(ctx context.Context, rawURL string, ttl time.Dura
 	resp, err := doCachedJSONRequest(ctx, http.DefaultClient, c.cache, "tmdb", http.MethodGet, rawURL, nil, nil, ttl, 1)
 	if err != nil {
 		return err
+	}
+	if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices {
+		return &tmdbDiscoverHTTPError{StatusCode: resp.StatusCode}
 	}
 	return json.Unmarshal(resp.Body, dest)
 }

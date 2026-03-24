@@ -2305,3 +2305,101 @@ func TestGetDiscoverTitleDetails_AttachesLibraryMatch(t *testing.T) {
 		t.Fatalf("show key = %q", payload.LibraryMatches[0].ShowKey)
 	}
 }
+
+func TestGetDiscover_DoesNotMatchTVShowsWithoutActiveEpisodes(t *testing.T) {
+	dbConn, err := db.InitDB(":memory:")
+	if err != nil {
+		t.Fatalf("init db: %v", err)
+	}
+	t.Cleanup(func() { _ = dbConn.Close() })
+
+	now := time.Now().UTC()
+	var userID int
+	if err := dbConn.QueryRow(
+		`INSERT INTO users (email, password_hash, is_admin, created_at) VALUES (?, ?, 1, ?) RETURNING id`,
+		"stale-show@test.com",
+		"hash",
+		now,
+	).Scan(&userID); err != nil {
+		t.Fatalf("insert user: %v", err)
+	}
+	var libraryID int
+	if err := dbConn.QueryRow(
+		`INSERT INTO libraries (user_id, name, type, path, created_at) VALUES (?, ?, ?, ?, ?) RETURNING id`,
+		userID,
+		"TV",
+		db.LibraryTypeTV,
+		"/tv",
+		now,
+	).Scan(&libraryID); err != nil {
+		t.Fatalf("insert library: %v", err)
+	}
+	var showID int
+	if err := dbConn.QueryRow(
+		`INSERT INTO shows (library_id, kind, tmdb_id, title, title_key, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?) RETURNING id`,
+		libraryID,
+		db.LibraryTypeTV,
+		777,
+		"Gone Show",
+		"goneshow",
+		now.Format(time.RFC3339),
+		now.Format(time.RFC3339),
+	).Scan(&showID); err != nil {
+		t.Fatalf("insert show: %v", err)
+	}
+	if _, err := dbConn.Exec(
+		`INSERT INTO tv_episodes (library_id, title, path, duration, match_status, tmdb_id, show_id, season, episode, missing_since) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		libraryID,
+		"Gone Show - S01E01 - Pilot",
+		"/tv/gone-show-s01e01.mkv",
+		0,
+		db.MatchStatusIdentified,
+		777,
+		showID,
+		1,
+		1,
+		now.Format(time.RFC3339),
+	); err != nil {
+		t.Fatalf("insert missing tv episode: %v", err)
+	}
+
+	handler := &LibraryHandler{
+		DB: dbConn,
+		Discover: &discoverStub{
+			getDiscover: func(context.Context) (*metadata.DiscoverResponse, error) {
+				return &metadata.DiscoverResponse{
+					Shelves: []metadata.DiscoverShelf{
+						{
+							ID:    "trending",
+							Title: "Trending",
+							Items: []metadata.DiscoverItem{
+								{MediaType: metadata.DiscoverMediaTypeTV, TMDBID: 777, Title: "Gone Show"},
+							},
+						},
+					},
+				}, nil
+			},
+		},
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/api/discover", nil)
+	req = req.WithContext(withUser(req.Context(), &db.User{ID: userID, IsAdmin: true}))
+	rec := httptest.NewRecorder()
+
+	handler.GetDiscover(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d body=%s", rec.Code, rec.Body.String())
+	}
+
+	var payload metadata.DiscoverResponse
+	if err := json.NewDecoder(rec.Body).Decode(&payload); err != nil {
+		t.Fatalf("decode payload: %v", err)
+	}
+	if len(payload.Shelves) != 1 || len(payload.Shelves[0].Items) != 1 {
+		t.Fatalf("payload = %+v", payload)
+	}
+	if len(payload.Shelves[0].Items[0].LibraryMatches) != 0 {
+		t.Fatalf("expected no library matches, got %+v", payload.Shelves[0].Items[0].LibraryMatches)
+	}
+}

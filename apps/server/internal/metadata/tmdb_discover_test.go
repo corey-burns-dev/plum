@@ -42,8 +42,8 @@ func (c *memoryProviderCache) Put(_ context.Context, key ProviderCacheKey, entry
 
 func TestTMDBClientGetDiscoverMapsShelvesAndUsesCache(t *testing.T) {
 	var (
-		mu    sync.Mutex
-		hits  = make(map[string]int)
+		mu   sync.Mutex
+		hits = make(map[string]int)
 	)
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		mu.Lock()
@@ -172,5 +172,36 @@ func TestTMDBClientSearchAndDetailMapDiscoverPayloads(t *testing.T) {
 	}
 	if tvDetails.IMDbID != "tt0012" || tvDetails.Runtime != 47 || tvDetails.NumberOfSeasons != 3 {
 		t.Fatalf("tv details = %+v", tvDetails)
+	}
+}
+
+func TestTMDBClientDiscoverSurfacesHTTPFailuresAndMapsDetail404ToNil(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Path {
+		case "/movie/404":
+			http.Error(w, `{"status_code":34,"status_message":"The resource you requested could not be found."}`, http.StatusNotFound)
+		default:
+			http.Error(w, `{"status_code":7,"status_message":"Invalid API key"}`, http.StatusUnauthorized)
+		}
+	}))
+	defer server.Close()
+
+	client := NewTMDBClient("test-key")
+	client.baseURL = server.URL
+
+	if _, err := client.GetDiscover(context.Background()); err == nil {
+		t.Fatal("expected discover error for unauthorized response")
+	}
+	if _, err := client.SearchDiscover(context.Background(), "matrix"); err == nil {
+		t.Fatal("expected search error for unauthorized response")
+	}
+
+	details, err := client.GetDiscoverTitleDetails(context.Background(), DiscoverMediaTypeMovie, 404)
+	if err != nil {
+		t.Fatalf("detail 404 err = %v", err)
+	}
+	if details != nil {
+		t.Fatalf("expected nil details for 404, got %+v", details)
 	}
 }
