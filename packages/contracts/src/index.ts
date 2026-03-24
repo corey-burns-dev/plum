@@ -458,6 +458,140 @@ export const SeriesSearchResultSchema = Schema.Struct({
   ExternalID: Schema.String,
 });
 
+export type DiscoverMediaType = "movie" | "tv";
+
+export const DiscoverMediaTypeSchema = Schema.Literals(["movie", "tv"]);
+
+export interface DiscoverLibraryMatch {
+  library_id: number;
+  library_name: string;
+  library_type: LibraryType;
+  kind: "movie" | "show";
+  show_key?: string;
+}
+
+export const DiscoverLibraryMatchSchema = Schema.Struct({
+  library_id: Schema.Number,
+  library_name: Schema.String,
+  library_type: LibraryTypeSchema,
+  kind: Schema.Literals(["movie", "show"]),
+  show_key: Schema.optional(Schema.String),
+});
+
+export interface DiscoverItem {
+  media_type: DiscoverMediaType;
+  tmdb_id: number;
+  title: string;
+  overview?: string;
+  poster_path?: string;
+  backdrop_path?: string;
+  release_date?: string;
+  first_air_date?: string;
+  vote_average?: number;
+  library_matches?: DiscoverLibraryMatch[];
+}
+
+export const DiscoverItemSchema = Schema.Struct({
+  media_type: DiscoverMediaTypeSchema,
+  tmdb_id: Schema.Number,
+  title: Schema.String,
+  overview: Schema.optional(Schema.String),
+  poster_path: Schema.optional(Schema.String),
+  backdrop_path: Schema.optional(Schema.String),
+  release_date: Schema.optional(Schema.String),
+  first_air_date: Schema.optional(Schema.String),
+  vote_average: Schema.optional(Schema.Number),
+  library_matches: Schema.optional(Schema.Array(DiscoverLibraryMatchSchema)),
+});
+
+export interface DiscoverShelf {
+  id: string;
+  title: string;
+  items: DiscoverItem[];
+}
+
+export const DiscoverShelfSchema = Schema.Struct({
+  id: Schema.String,
+  title: Schema.String,
+  items: Schema.Array(DiscoverItemSchema),
+});
+
+export interface DiscoverResponse {
+  shelves: DiscoverShelf[];
+}
+
+export const DiscoverResponseSchema = Schema.Struct({
+  shelves: Schema.Array(DiscoverShelfSchema),
+});
+
+export interface DiscoverSearchResponse {
+  movies: DiscoverItem[];
+  tv: DiscoverItem[];
+}
+
+export const DiscoverSearchResponseSchema = Schema.Struct({
+  movies: Schema.Array(DiscoverItemSchema),
+  tv: Schema.Array(DiscoverItemSchema),
+});
+
+export interface DiscoverTitleVideo {
+  name: string;
+  site: string;
+  key: string;
+  type: string;
+  official?: boolean;
+}
+
+export const DiscoverTitleVideoSchema = Schema.Struct({
+  name: Schema.String,
+  site: Schema.String,
+  key: Schema.String,
+  type: Schema.String,
+  official: Schema.optional(Schema.Boolean),
+});
+
+export interface DiscoverTitleDetails {
+  media_type: DiscoverMediaType;
+  tmdb_id: number;
+  title: string;
+  overview: string;
+  poster_path?: string;
+  backdrop_path?: string;
+  release_date?: string;
+  first_air_date?: string;
+  vote_average?: number;
+  imdb_id?: string;
+  imdb_rating?: number;
+  status?: string;
+  genres: string[];
+  runtime?: number;
+  number_of_seasons?: number;
+  number_of_episodes?: number;
+  videos: DiscoverTitleVideo[];
+  library_matches?: DiscoverLibraryMatch[];
+}
+
+export const DiscoverTitleDetailsSchema = Schema.Struct({
+  media_type: DiscoverMediaTypeSchema,
+  tmdb_id: Schema.Number,
+  title: Schema.String,
+  overview: Schema.String,
+  poster_path: Schema.optional(Schema.String),
+  backdrop_path: Schema.optional(Schema.String),
+  release_date: Schema.optional(Schema.String),
+  first_air_date: Schema.optional(Schema.String),
+  vote_average: Schema.optional(Schema.Number),
+  imdb_id: Schema.optional(Schema.String),
+  imdb_rating: Schema.optional(Schema.Number),
+  status: Schema.optional(Schema.String),
+  genres: Schema.Array(Schema.String),
+  runtime: Schema.optional(Schema.Number),
+  number_of_seasons: Schema.optional(Schema.Number),
+  number_of_episodes: Schema.optional(Schema.Number),
+  videos: Schema.Array(DiscoverTitleVideoSchema),
+  library_matches: Schema.optional(Schema.Array(DiscoverLibraryMatchSchema)),
+});
+
 export interface ShowActionResult {
   updated: number;
 }

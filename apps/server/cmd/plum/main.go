@@ -124,6 +124,7 @@ func buildRouter(sqlDB *sql.DB, hub *ws.Hub, playbackSessions *transcoder.Playba
 		Meta:        pipeline,
 		Series:      pipeline,
 		SeriesQuery: pipeline,
+		Discover:    pipeline,
 		ScanJobs:    scanJobs,
 	}
 	scanJobs.AttachHandler(libHandler)
@@ -156,6 +157,9 @@ func buildRouter(sqlDB *sql.DB, hub *ws.Hub, playbackSessions *transcoder.Playba
 		protected.Get("/api/libraries", libHandler.ListLibraries)
 		protected.Put("/api/libraries/{id}/playback-preferences", libHandler.UpdateLibraryPlaybackPreferences)
 		protected.Get("/api/home", libHandler.GetHomeDashboard)
+		protected.Get("/api/discover", libHandler.GetDiscover)
+		protected.Get("/api/discover/search", libHandler.SearchDiscover)
+		protected.Get("/api/discover/{mediaType}/{tmdbId}", libHandler.GetDiscoverTitleDetails)
 		protected.Get("/api/libraries/{id}/scan", libHandler.GetLibraryScanStatus)
 		protected.Post("/api/libraries/{id}/scan", libHandler.ScanLibrary)
 		protected.Post("/api/libraries/{id}/scan/start", libHandler.StartLibraryScan)

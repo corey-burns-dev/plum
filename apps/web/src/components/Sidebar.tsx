@@ -2,7 +2,7 @@ import { Link, useLocation, useParams } from "react-router-dom";
 import { useLibraries } from "@/queries";
 import { getLibraryTabLabel } from "@/lib/showGrouping";
 import { cn } from "@/lib/utils";
-import { Film, Home, Music, Tv } from "lucide-react";
+import { Compass, Film, Home, Music, Tv } from "lucide-react";
 import type { Library } from "@/api";
 import { useIdentifyQueue } from "@/contexts/IdentifyQueueContext";
 import { useScanQueue } from "@/contexts/ScanQueueContext";
@@ -21,6 +21,7 @@ export function Sidebar() {
   const location = useLocation();
   const activeId = libraryId ? parseInt(libraryId, 10) : null;
   const isHomeRoute = location.pathname === "/";
+  const isDiscoverRoute = location.pathname === "/discover" || location.pathname.startsWith("/discover/");
 
   return (
     <aside className="flex w-56 shrink-0 flex-col border-r border-[var(--plum-border)] bg-[var(--plum-panel)]/60 overflow-y-auto">
@@ -36,6 +37,18 @@ export function Sidebar() {
         >
           <Home className="size-[18px] shrink-0 opacity-70" />
           <span className="truncate">Home</span>
+        </Link>
+        <Link
+          to="/discover"
+          className={cn(
+            "mb-2 flex items-center gap-3 rounded-[var(--radius-md)] px-3 py-2 text-sm font-medium transition-colors",
+            isDiscoverRoute
+              ? "bg-[var(--plum-accent-soft)] text-[var(--plum-accent)]"
+              : "text-[var(--plum-text)] hover:bg-[var(--plum-panel-alt)] hover:text-[var(--plum-text)]",
+          )}
+        >
+          <Compass className="size-[18px] shrink-0 opacity-70" />
+          <span className="truncate">Discover</span>
         </Link>
         <div className="mb-2 px-2 text-xs font-medium uppercase tracking-wider text-[var(--plum-muted)]">
           Libraries

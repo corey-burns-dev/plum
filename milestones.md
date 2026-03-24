@@ -15,15 +15,12 @@ Goal: create the core skeleton so everything later plugs in cleanly.
 - [x] Error handling framework
 - [x] Environment configuration
 - [x] API client SDK (TS)
-- [ ] Metrics (Prometheus style)
-- [ ] Performance profiling
 
 ### Database
 
 - [x] DB schema design
 - [x] Migration system
 - [x] ORM or query layer
-- [ ] seed/test data support
 - [x] Database indexing strategy
 
 ### Basic API framework
@@ -32,8 +29,6 @@ Goal: create the core skeleton so everything later plugs in cleanly.
 - [x] request validation
 - [x] response formatting
 - [x] auth middleware
-- [ ] API versioning strategy
-- [ ] API rate limiting
 
 ---
 

@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"log"
 	"net/http"
 	"path/filepath"
@@ -24,6 +25,7 @@ type LibraryHandler struct {
 	Meta        metadata.Identifier
 	Series      metadata.SeriesDetailsProvider
 	SeriesQuery metadata.SeriesSearchProvider
+	Discover    metadata.DiscoverProvider
 	ScanJobs    *LibraryScanManager
 	identifyRun *identifyRunTracker
 }
@@ -226,6 +228,16 @@ func isSQLiteBusyError(err error) bool {
 	}
 	text := strings.ToLower(err.Error())
 	return strings.Contains(text, "database is locked") || strings.Contains(text, "sqlite_busy")
+}
+
+func discoverHTTPStatus(err error) (int, string) {
+	if err == nil {
+		return http.StatusOK, ""
+	}
+	if errors.Is(err, metadata.ErrTMDBNotConfigured) {
+		return http.StatusServiceUnavailable, err.Error()
+	}
+	return http.StatusInternalServerError, "discover failed: " + err.Error()
 }
 
 func (h *LibraryHandler) CreateLibrary(w http.ResponseWriter, r *http.Request) {
@@ -1154,6 +1166,120 @@ func (h *LibraryHandler) GetHomeDashboard(w http.ResponseWriter, r *http.Request
 	}
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(dashboard)
+}
+
+func (h *LibraryHandler) GetDiscover(w http.ResponseWriter, r *http.Request) {
+	u := UserFromContext(r.Context())
+	if u == nil {
+		http.Error(w, "unauthorized", http.StatusUnauthorized)
+		return
+	}
+	if h.Discover == nil {
+		http.Error(w, metadata.ErrTMDBNotConfigured.Error(), http.StatusServiceUnavailable)
+		return
+	}
+	payload, err := h.Discover.GetDiscover(r.Context())
+	if err != nil {
+		status, message := discoverHTTPStatus(err)
+		http.Error(w, message, status)
+		return
+	}
+	if payload == nil {
+		http.Error(w, "not found", http.StatusNotFound)
+		return
+	}
+	for i := range payload.Shelves {
+		if err := db.AttachDiscoverLibraryMatches(h.DB, u.ID, payload.Shelves[i].Items); err != nil {
+			http.Error(w, "internal error", http.StatusInternalServerError)
+			return
+		}
+	}
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(payload)
+}
+
+func (h *LibraryHandler) SearchDiscover(w http.ResponseWriter, r *http.Request) {
+	u := UserFromContext(r.Context())
+	if u == nil {
+		http.Error(w, "unauthorized", http.StatusUnauthorized)
+		return
+	}
+	query := strings.TrimSpace(r.URL.Query().Get("q"))
+	if query == "" {
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(&metadata.DiscoverSearchResponse{
+			Movies: []metadata.DiscoverItem{},
+			TV:     []metadata.DiscoverItem{},
+		})
+		return
+	}
+	if h.Discover == nil {
+		http.Error(w, metadata.ErrTMDBNotConfigured.Error(), http.StatusServiceUnavailable)
+		return
+	}
+	payload, err := h.Discover.SearchDiscover(r.Context(), query)
+	if err != nil {
+		status, message := discoverHTTPStatus(err)
+		http.Error(w, message, status)
+		return
+	}
+	if payload == nil {
+		payload = &metadata.DiscoverSearchResponse{
+			Movies: []metadata.DiscoverItem{},
+			TV:     []metadata.DiscoverItem{},
+		}
+	}
+	if err := db.AttachDiscoverLibraryMatches(h.DB, u.ID, payload.Movies); err != nil {
+		http.Error(w, "internal error", http.StatusInternalServerError)
+		return
+	}
+	if err := db.AttachDiscoverLibraryMatches(h.DB, u.ID, payload.TV); err != nil {
+		http.Error(w, "internal error", http.StatusInternalServerError)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(payload)
+}
+
+func (h *LibraryHandler) GetDiscoverTitleDetails(w http.ResponseWriter, r *http.Request) {
+	u := UserFromContext(r.Context())
+	if u == nil {
+		http.Error(w, "unauthorized", http.StatusUnauthorized)
+		return
+	}
+	if h.Discover == nil {
+		http.Error(w, metadata.ErrTMDBNotConfigured.Error(), http.StatusServiceUnavailable)
+		return
+	}
+
+	mediaType := metadata.DiscoverMediaType(strings.TrimSpace(chi.URLParam(r, "mediaType")))
+	if mediaType != metadata.DiscoverMediaTypeMovie && mediaType != metadata.DiscoverMediaTypeTV {
+		http.Error(w, "invalid media type", http.StatusBadRequest)
+		return
+	}
+	tmdbID, err := strconv.Atoi(chi.URLParam(r, "tmdbId"))
+	if err != nil || tmdbID <= 0 {
+		http.Error(w, "invalid tmdb id", http.StatusBadRequest)
+		return
+	}
+
+	details, err := h.Discover.GetDiscoverTitleDetails(r.Context(), mediaType, tmdbID)
+	if err != nil {
+		status, message := discoverHTTPStatus(err)
+		http.Error(w, message, status)
+		return
+	}
+	if details == nil {
+		http.Error(w, "not found", http.StatusNotFound)
+		return
+	}
+	if err := db.AttachDiscoverTitleLibraryMatches(h.DB, u.ID, details); err != nil {
+		http.Error(w, "internal error", http.StatusInternalServerError)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(details)
 }
 
 func (h *LibraryHandler) UpdateMediaProgress(w http.ResponseWriter, r *http.Request) {

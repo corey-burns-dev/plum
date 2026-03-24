@@ -143,6 +143,14 @@ describe("App library and player wiring", () => {
       continueWatching: [],
       recentlyAdded: [],
     });
+    vi.spyOn(api, "getDiscover").mockResolvedValue({
+      shelves: [],
+    });
+    vi.spyOn(api, "searchDiscover").mockResolvedValue({
+      movies: [],
+      tv: [],
+    });
+    vi.spyOn(api, "getDiscoverTitleDetails").mockResolvedValue(null);
     vi.spyOn(api, "createPlaybackSession").mockImplementation(async (mediaId, payload) => ({
       sessionId: `session-${mediaId}`,
       mediaId,
@@ -1752,5 +1760,175 @@ describe("App library and player wiring", () => {
     fireEvent.click(screen.getByRole("button", { name: /Close player/i }));
 
     expect(api.closePlaybackSession).not.toHaveBeenCalled();
+  });
+
+  it("renders the discover page and shows TMDB shelves", async () => {
+    window.history.pushState({}, "", "/discover");
+    vi.spyOn(api, "listLibraries").mockResolvedValue([
+      { id: 1, name: "Movies", type: "movie", path: "/movies", user_id: 1 },
+    ]);
+    vi.spyOn(api, "getDiscover").mockResolvedValue({
+      shelves: [
+        {
+          id: "trending",
+          title: "Trending Now",
+          items: [
+            {
+              media_type: "movie",
+              tmdb_id: 101,
+              title: "The Discoverable",
+              poster_path: "/poster.jpg",
+              release_date: "2025-01-01",
+              vote_average: 8.1,
+              library_matches: [],
+            },
+          ],
+        },
+      ],
+    });
+
+    renderApp();
+
+    expect(await screen.findByText("Trending Now")).toBeTruthy();
+    expect(screen.getByRole("link", { name: /The Discoverable/i })).toHaveAttribute(
+      "href",
+      "/discover/movie/101",
+    );
+    expect(screen.getByRole("link", { name: /Discover/i })).toBeTruthy();
+  });
+
+  it("replaces shelves with grouped discover search results and surfaces in-library badges", async () => {
+    window.history.pushState({}, "", "/discover");
+    vi.spyOn(api, "listLibraries").mockResolvedValue([
+      { id: 1, name: "TV", type: "tv", path: "/tv", user_id: 1 },
+    ]);
+    vi.spyOn(api, "getDiscover").mockResolvedValue({
+      shelves: [
+        {
+          id: "trending",
+          title: "Trending Now",
+          items: [],
+        },
+      ],
+    });
+    vi.spyOn(api, "searchDiscover").mockResolvedValue({
+      movies: [
+        {
+          media_type: "movie",
+          tmdb_id: 202,
+          title: "Library Movie",
+          poster_path: "/poster.jpg",
+          release_date: "2024-05-01",
+          vote_average: 7.9,
+          library_matches: [
+            {
+              library_id: 9,
+              library_name: "Movies",
+              library_type: "movie",
+              kind: "movie",
+            },
+          ],
+        },
+      ],
+      tv: [
+        {
+          media_type: "tv",
+          tmdb_id: 303,
+          title: "Space Series",
+          poster_path: "/poster-tv.jpg",
+          first_air_date: "2023-02-01",
+          vote_average: 8.4,
+          library_matches: [],
+        },
+      ],
+    });
+
+    renderApp();
+
+    fireEvent.change(screen.getByPlaceholderText(/Search movies and TV shows/i), {
+      target: { value: "space" },
+    });
+
+    await waitFor(() => {
+      expect(api.searchDiscover).toHaveBeenCalledWith("space");
+    });
+
+    expect(await screen.findByText("Movies")).toBeTruthy();
+    expect(screen.getByText("TV Shows")).toBeTruthy();
+    expect(screen.queryByText("Trending Now")).not.toBeInTheDocument();
+    expect(screen.getByText("In Library")).toBeTruthy();
+    expect(screen.getByRole("link", { name: /Library Movie/i })).toHaveAttribute(
+      "href",
+      "/discover/movie/202",
+    );
+  });
+
+  it("renders discover title details with an open-in-library link", async () => {
+    window.history.pushState({}, "", "/discover/tv/404");
+    vi.spyOn(api, "listLibraries").mockResolvedValue([
+      { id: 1, name: "TV", type: "tv", path: "/tv", user_id: 1 },
+    ]);
+    vi.spyOn(api, "getDiscoverTitleDetails").mockResolvedValue({
+      media_type: "tv",
+      tmdb_id: 404,
+      title: "Galaxy Questers",
+      overview: "A team heads into the unknown.",
+      poster_path: "/poster.jpg",
+      backdrop_path: "/backdrop.jpg",
+      first_air_date: "2024-01-01",
+      vote_average: 8.8,
+      imdb_id: "tt1234567",
+      imdb_rating: 8.5,
+      status: "Returning Series",
+      genres: ["Sci-Fi", "Adventure"],
+      runtime: 52,
+      number_of_seasons: 2,
+      number_of_episodes: 18,
+      videos: [
+        {
+          name: "Official Trailer",
+          site: "YouTube",
+          key: "abc123",
+          type: "Trailer",
+          official: true,
+        },
+      ],
+      library_matches: [
+        {
+          library_id: 1,
+          library_name: "TV",
+          library_type: "tv",
+          kind: "show",
+          show_key: "tmdb-404",
+        },
+      ],
+    });
+
+    renderApp();
+
+    expect(await screen.findByRole("link", { name: /Open in Library/i })).toHaveAttribute(
+      "href",
+      "/library/1/show/tmdb-404",
+    );
+    expect(screen.getByText("Galaxy Questers")).toBeTruthy();
+    expect(screen.getByRole("link", { name: /Official Trailer/i })).toHaveAttribute(
+      "href",
+      "https://www.youtube.com/watch?v=abc123",
+    );
+  });
+
+  it("shows a friendly discover configuration message when TMDB is missing", async () => {
+    window.history.pushState({}, "", "/discover/movie/505");
+    vi.spyOn(api, "listLibraries").mockResolvedValue([
+      { id: 1, name: "Movies", type: "movie", path: "/movies", user_id: 1 },
+    ]);
+    vi.spyOn(api, "getDiscoverTitleDetails").mockRejectedValue(
+      new Error("tmdb discover requires TMDB_API_KEY"),
+    );
+
+    renderApp();
+
+    expect(await screen.findByText(/Discover needs TMDB configured/i)).toBeTruthy();
+    expect(screen.getByText(/TMDB_API_KEY/i)).toBeTruthy();
   });
 });

@@ -120,6 +120,12 @@ type seriesDetailsStub struct {
 	getSeriesDetails func(context.Context, int) (*metadata.SeriesDetails, error)
 }
 
+type discoverStub struct {
+	getDiscover            func(context.Context) (*metadata.DiscoverResponse, error)
+	searchDiscover         func(context.Context, string) (*metadata.DiscoverSearchResponse, error)
+	getDiscoverTitleDetail func(context.Context, metadata.DiscoverMediaType, int) (*metadata.DiscoverTitleDetails, error)
+}
+
 func (s *seriesQueryStub) SearchTV(ctx context.Context, query string) ([]metadata.MatchResult, error) {
 	if s.searchTV == nil {
 		return nil, nil
@@ -145,6 +151,27 @@ func (s *seriesDetailsStub) GetSeriesDetails(ctx context.Context, tmdbID int) (*
 		return nil, nil
 	}
 	return s.getSeriesDetails(ctx, tmdbID)
+}
+
+func (s *discoverStub) GetDiscover(ctx context.Context) (*metadata.DiscoverResponse, error) {
+	if s.getDiscover == nil {
+		return nil, nil
+	}
+	return s.getDiscover(ctx)
+}
+
+func (s *discoverStub) SearchDiscover(ctx context.Context, query string) (*metadata.DiscoverSearchResponse, error) {
+	if s.searchDiscover == nil {
+		return nil, nil
+	}
+	return s.searchDiscover(ctx, query)
+}
+
+func (s *discoverStub) GetDiscoverTitleDetails(ctx context.Context, mediaType metadata.DiscoverMediaType, tmdbID int) (*metadata.DiscoverTitleDetails, error) {
+	if s.getDiscoverTitleDetail == nil {
+		return nil, nil
+	}
+	return s.getDiscoverTitleDetail(ctx, mediaType, tmdbID)
 }
 
 func (s *identifyStub) IdentifyTV(ctx context.Context, info metadata.MediaInfo) *metadata.MatchResult {
@@ -2028,5 +2055,253 @@ func TestListLibraryMedia_EmptyLibraryReturnsJSONArray(t *testing.T) {
 	}
 	if strings.TrimSpace(rec.Body.String()) != "[]" {
 		t.Fatalf("body = %q, want []", rec.Body.String())
+	}
+}
+
+func TestGetDiscover_AttachesMovieTVAndAnimeLibraryMatches(t *testing.T) {
+	dbConn, err := db.InitDB(":memory:")
+	if err != nil {
+		t.Fatalf("init db: %v", err)
+	}
+	t.Cleanup(func() { _ = dbConn.Close() })
+
+	now := time.Now().UTC()
+	var userID int
+	if err := dbConn.QueryRow(
+		`INSERT INTO users (email, password_hash, is_admin, created_at) VALUES (?, ?, 1, ?) RETURNING id`,
+		"discover@test.com",
+		"hash",
+		now,
+	).Scan(&userID); err != nil {
+		t.Fatalf("insert user: %v", err)
+	}
+
+	var movieLibraryID int
+	if err := dbConn.QueryRow(
+		`INSERT INTO libraries (user_id, name, type, path, created_at) VALUES (?, ?, ?, ?, ?) RETURNING id`,
+		userID,
+		"Movies",
+		db.LibraryTypeMovie,
+		"/movies",
+		now,
+	).Scan(&movieLibraryID); err != nil {
+		t.Fatalf("insert movie library: %v", err)
+	}
+	var tvLibraryID int
+	if err := dbConn.QueryRow(
+		`INSERT INTO libraries (user_id, name, type, path, created_at) VALUES (?, ?, ?, ?, ?) RETURNING id`,
+		userID,
+		"TV",
+		db.LibraryTypeTV,
+		"/tv",
+		now,
+	).Scan(&tvLibraryID); err != nil {
+		t.Fatalf("insert tv library: %v", err)
+	}
+	var animeLibraryID int
+	if err := dbConn.QueryRow(
+		`INSERT INTO libraries (user_id, name, type, path, created_at) VALUES (?, ?, ?, ?, ?) RETURNING id`,
+		userID,
+		"Anime",
+		db.LibraryTypeAnime,
+		"/anime",
+		now,
+	).Scan(&animeLibraryID); err != nil {
+		t.Fatalf("insert anime library: %v", err)
+	}
+
+	if _, err := dbConn.Exec(
+		`INSERT INTO movies (library_id, title, path, duration, match_status, tmdb_id) VALUES (?, ?, ?, ?, ?, ?)`,
+		movieLibraryID,
+		"Movie Match",
+		"/movies/movie-match.mkv",
+		0,
+		db.MatchStatusIdentified,
+		101,
+	); err != nil {
+		t.Fatalf("insert movie: %v", err)
+	}
+	if _, err := dbConn.Exec(
+		`INSERT INTO tv_episodes (library_id, title, path, duration, match_status, tmdb_id, season, episode) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+		tvLibraryID,
+		"TV Match - S01E01 - Pilot",
+		"/tv/tv-match-s01e01.mkv",
+		0,
+		db.MatchStatusIdentified,
+		202,
+		1,
+		1,
+	); err != nil {
+		t.Fatalf("insert tv episode: %v", err)
+	}
+	if _, err := dbConn.Exec(
+		`INSERT INTO anime_episodes (library_id, title, path, duration, match_status, tmdb_id, season, episode) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+		animeLibraryID,
+		"Anime Match - S01E01 - Start",
+		"/anime/anime-match-s01e01.mkv",
+		0,
+		db.MatchStatusIdentified,
+		303,
+		1,
+		1,
+	); err != nil {
+		t.Fatalf("insert anime episode: %v", err)
+	}
+
+	handler := &LibraryHandler{
+		DB: dbConn,
+		Discover: &discoverStub{
+			getDiscover: func(context.Context) (*metadata.DiscoverResponse, error) {
+				return &metadata.DiscoverResponse{
+					Shelves: []metadata.DiscoverShelf{
+						{
+							ID:    "trending",
+							Title: "Trending Now",
+							Items: []metadata.DiscoverItem{
+								{MediaType: metadata.DiscoverMediaTypeMovie, TMDBID: 101, Title: "Movie Match"},
+								{MediaType: metadata.DiscoverMediaTypeTV, TMDBID: 202, Title: "TV Match"},
+								{MediaType: metadata.DiscoverMediaTypeTV, TMDBID: 303, Title: "Anime Match"},
+							},
+						},
+					},
+				}, nil
+			},
+		},
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/api/discover", nil)
+	req = req.WithContext(withUser(req.Context(), &db.User{ID: userID, IsAdmin: true}))
+	rec := httptest.NewRecorder()
+
+	handler.GetDiscover(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d body=%s", rec.Code, rec.Body.String())
+	}
+
+	var payload metadata.DiscoverResponse
+	if err := json.NewDecoder(rec.Body).Decode(&payload); err != nil {
+		t.Fatalf("decode payload: %v", err)
+	}
+	items := payload.Shelves[0].Items
+	if len(items) != 3 {
+		t.Fatalf("items = %+v", items)
+	}
+	if got := items[0].LibraryMatches[0].Kind; got != "movie" {
+		t.Fatalf("movie kind = %q", got)
+	}
+	if got := items[1].LibraryMatches[0].ShowKey; got != "tmdb-202" {
+		t.Fatalf("tv show key = %q", got)
+	}
+	if got := items[2].LibraryMatches[0].LibraryType; got != db.LibraryTypeAnime {
+		t.Fatalf("anime library type = %q", got)
+	}
+}
+
+func TestGetDiscover_ReturnsServiceUnavailableWhenTMDBMissing(t *testing.T) {
+	handler := &LibraryHandler{
+		Discover: &discoverStub{
+			getDiscover: func(context.Context) (*metadata.DiscoverResponse, error) {
+				return nil, metadata.ErrTMDBNotConfigured
+			},
+		},
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/api/discover", nil)
+	req = req.WithContext(withUser(req.Context(), &db.User{ID: 1, IsAdmin: true}))
+	rec := httptest.NewRecorder()
+
+	handler.GetDiscover(rec, req)
+
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Fatalf("status = %d body=%s", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "TMDB_API_KEY") {
+		t.Fatalf("body = %q", rec.Body.String())
+	}
+}
+
+func TestGetDiscoverTitleDetails_AttachesLibraryMatch(t *testing.T) {
+	dbConn, err := db.InitDB(":memory:")
+	if err != nil {
+		t.Fatalf("init db: %v", err)
+	}
+	t.Cleanup(func() { _ = dbConn.Close() })
+
+	now := time.Now().UTC()
+	var userID int
+	if err := dbConn.QueryRow(
+		`INSERT INTO users (email, password_hash, is_admin, created_at) VALUES (?, ?, 1, ?) RETURNING id`,
+		"detail@test.com",
+		"hash",
+		now,
+	).Scan(&userID); err != nil {
+		t.Fatalf("insert user: %v", err)
+	}
+	var libraryID int
+	if err := dbConn.QueryRow(
+		`INSERT INTO libraries (user_id, name, type, path, created_at) VALUES (?, ?, ?, ?, ?) RETURNING id`,
+		userID,
+		"TV",
+		db.LibraryTypeTV,
+		"/tv",
+		now,
+	).Scan(&libraryID); err != nil {
+		t.Fatalf("insert library: %v", err)
+	}
+	if _, err := dbConn.Exec(
+		`INSERT INTO tv_episodes (library_id, title, path, duration, match_status, tmdb_id, season, episode) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+		libraryID,
+		"Detail Match - S01E01 - Start",
+		"/tv/detail-match-s01e01.mkv",
+		0,
+		db.MatchStatusIdentified,
+		404,
+		1,
+		1,
+	); err != nil {
+		t.Fatalf("insert tv episode: %v", err)
+	}
+
+	handler := &LibraryHandler{
+		DB: dbConn,
+		Discover: &discoverStub{
+			getDiscoverTitleDetail: func(context.Context, metadata.DiscoverMediaType, int) (*metadata.DiscoverTitleDetails, error) {
+				return &metadata.DiscoverTitleDetails{
+					MediaType:    metadata.DiscoverMediaTypeTV,
+					TMDBID:       404,
+					Title:        "Detail Match",
+					Overview:     "Overview",
+					Genres:       []string{"Drama"},
+					Videos:       []metadata.DiscoverTitleVideo{},
+					PosterPath:   "/poster.jpg",
+					BackdropPath: "/backdrop.jpg",
+				}, nil
+			},
+		},
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/api/discover/tv/404", nil)
+	rctx := chi.NewRouteContext()
+	rctx.URLParams.Add("mediaType", "tv")
+	rctx.URLParams.Add("tmdbId", "404")
+	req = req.WithContext(context.WithValue(withUser(req.Context(), &db.User{ID: userID, IsAdmin: true}), chi.RouteCtxKey, rctx))
+	rec := httptest.NewRecorder()
+
+	handler.GetDiscoverTitleDetails(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d body=%s", rec.Code, rec.Body.String())
+	}
+
+	var payload metadata.DiscoverTitleDetails
+	if err := json.NewDecoder(rec.Body).Decode(&payload); err != nil {
+		t.Fatalf("decode payload: %v", err)
+	}
+	if len(payload.LibraryMatches) != 1 {
+		t.Fatalf("library matches = %+v", payload.LibraryMatches)
+	}
+	if payload.LibraryMatches[0].ShowKey != "tmdb-404" {
+		t.Fatalf("show key = %q", payload.LibraryMatches[0].ShowKey)
 	}
 }

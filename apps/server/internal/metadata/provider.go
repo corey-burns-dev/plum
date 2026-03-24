@@ -1,6 +1,9 @@
 package metadata
 
-import "context"
+import (
+	"context"
+	"errors"
+)
 
 // Identifier is implemented by Pipeline and by test mocks. Used by the scanner to resolve metadata.
 type Identifier interface {
@@ -94,6 +97,86 @@ type SeriesDetails struct {
 // SeriesDetailsProvider fetches TV series metadata by TMDB ID.
 type SeriesDetailsProvider interface {
 	GetSeriesDetails(ctx context.Context, tmdbID int) (*SeriesDetails, error)
+}
+
+type DiscoverMediaType string
+
+const (
+	DiscoverMediaTypeMovie DiscoverMediaType = "movie"
+	DiscoverMediaTypeTV    DiscoverMediaType = "tv"
+)
+
+var ErrTMDBNotConfigured = errors.New("tmdb discover requires TMDB_API_KEY")
+
+type DiscoverLibraryMatch struct {
+	LibraryID   int    `json:"library_id"`
+	LibraryName string `json:"library_name"`
+	LibraryType string `json:"library_type"`
+	Kind        string `json:"kind"`
+	ShowKey     string `json:"show_key,omitempty"`
+}
+
+type DiscoverItem struct {
+	MediaType      DiscoverMediaType      `json:"media_type"`
+	TMDBID         int                    `json:"tmdb_id"`
+	Title          string                 `json:"title"`
+	Overview       string                 `json:"overview,omitempty"`
+	PosterPath     string                 `json:"poster_path,omitempty"`
+	BackdropPath   string                 `json:"backdrop_path,omitempty"`
+	ReleaseDate    string                 `json:"release_date,omitempty"`
+	FirstAirDate   string                 `json:"first_air_date,omitempty"`
+	VoteAverage    float64                `json:"vote_average,omitempty"`
+	LibraryMatches []DiscoverLibraryMatch `json:"library_matches,omitempty"`
+}
+
+type DiscoverShelf struct {
+	ID    string         `json:"id"`
+	Title string         `json:"title"`
+	Items []DiscoverItem `json:"items"`
+}
+
+type DiscoverResponse struct {
+	Shelves []DiscoverShelf `json:"shelves"`
+}
+
+type DiscoverSearchResponse struct {
+	Movies []DiscoverItem `json:"movies"`
+	TV     []DiscoverItem `json:"tv"`
+}
+
+type DiscoverTitleVideo struct {
+	Name     string `json:"name"`
+	Site     string `json:"site"`
+	Key      string `json:"key"`
+	Type     string `json:"type"`
+	Official bool   `json:"official,omitempty"`
+}
+
+type DiscoverTitleDetails struct {
+	MediaType        DiscoverMediaType      `json:"media_type"`
+	TMDBID           int                    `json:"tmdb_id"`
+	Title            string                 `json:"title"`
+	Overview         string                 `json:"overview"`
+	PosterPath       string                 `json:"poster_path,omitempty"`
+	BackdropPath     string                 `json:"backdrop_path,omitempty"`
+	ReleaseDate      string                 `json:"release_date,omitempty"`
+	FirstAirDate     string                 `json:"first_air_date,omitempty"`
+	VoteAverage      float64                `json:"vote_average,omitempty"`
+	IMDbID           string                 `json:"imdb_id,omitempty"`
+	IMDbRating       float64                `json:"imdb_rating,omitempty"`
+	Status           string                 `json:"status,omitempty"`
+	Genres           []string               `json:"genres"`
+	Runtime          int                    `json:"runtime,omitempty"`
+	NumberOfSeasons  int                    `json:"number_of_seasons,omitempty"`
+	NumberOfEpisodes int                    `json:"number_of_episodes,omitempty"`
+	Videos           []DiscoverTitleVideo   `json:"videos"`
+	LibraryMatches   []DiscoverLibraryMatch `json:"library_matches,omitempty"`
+}
+
+type DiscoverProvider interface {
+	GetDiscover(ctx context.Context) (*DiscoverResponse, error)
+	SearchDiscover(ctx context.Context, query string) (*DiscoverSearchResponse, error)
+	GetDiscoverTitleDetails(ctx context.Context, mediaType DiscoverMediaType, tmdbID int) (*DiscoverTitleDetails, error)
 }
 
 // IMDbRatingProvider resolves an IMDb rating by IMDb title id.

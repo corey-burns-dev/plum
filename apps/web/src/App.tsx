@@ -8,6 +8,8 @@ import { ScanQueueProvider } from "./contexts/ScanQueueContext";
 import { WsProvider } from "./contexts/WsContext";
 import { MainLayout } from "./components/MainLayout";
 import { Dashboard } from "./pages/Dashboard";
+import { Discover } from "./pages/Discover";
+import { DiscoverDetail } from "./pages/DiscoverDetail";
 import { Home } from "./pages/Home";
 import { Login } from "./pages/Login";
 import { Onboarding } from "./pages/Onboarding";
@@ -51,6 +53,8 @@ function AppRouter({ queryClient }: { queryClient: QueryClient }) {
                 <Routes>
                   <Route path="/" element={<MainLayout />}>
                     <Route index element={<Dashboard />} />
+                    <Route path="discover" element={<Discover />} />
+                    <Route path="discover/:mediaType/:tmdbId" element={<DiscoverDetail />} />
                     <Route path="library/:libraryId" element={<Home />} />
                     <Route path="library/:libraryId/show/:showKey" element={<ShowDetail />} />
                     <Route path="settings" element={<Settings />} />
