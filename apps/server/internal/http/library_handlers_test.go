@@ -2083,6 +2083,165 @@ func TestIdentifyLibrary_GroupsSafeAnimeAndLeavesAbsoluteEpisodesOnResidualPath(
 	}
 }
 
+func TestIdentifyLibrary_DoesNotCountMatchedTVMetadataRefreshAsFailed(t *testing.T) {
+	dbConn, err := db.InitDB(":memory:")
+	if err != nil {
+		t.Fatalf("init db: %v", err)
+	}
+	t.Cleanup(func() { _ = dbConn.Close() })
+
+	now := time.Now().UTC()
+	var userID int
+	if err := dbConn.QueryRow(`INSERT INTO users (email, password_hash, is_admin, created_at) VALUES (?, ?, 1, ?) RETURNING id`, "tv-refresh@test.com", "hash", now).Scan(&userID); err != nil {
+		t.Fatalf("insert user: %v", err)
+	}
+	var libraryID int
+	if err := dbConn.QueryRow(`INSERT INTO libraries (user_id, name, type, path, created_at) VALUES (?, ?, ?, ?, ?) RETURNING id`, userID, "TV", db.LibraryTypeTV, "/tv", now).Scan(&libraryID); err != nil {
+		t.Fatalf("insert library: %v", err)
+	}
+
+	if _, err := dbConn.Exec(
+		`INSERT INTO tv_episodes (
+			library_id, title, path, duration, match_status, season, episode, tmdb_id, poster_path, imdb_id, last_metadata_refresh_at
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		libraryID,
+		"Slow Horses - S01E01 - Pilot",
+		"/tv/Slow Horses/Season 1/Slow Horses - S01E01.mkv",
+		0,
+		db.MatchStatusIdentified,
+		1,
+		1,
+		321,
+		"",
+		"",
+		"",
+	); err != nil {
+		t.Fatalf("insert episode: %v", err)
+	}
+
+	var getEpisodeCalls int32
+	handler := &LibraryHandler{
+		DB: dbConn,
+		Meta: &identifyStub{
+			tv: func(_ context.Context, info metadata.MediaInfo) *metadata.MatchResult {
+				t.Fatalf("unexpected per-row TV identify for %+v", info)
+				return nil
+			},
+		},
+		SeriesQuery: &seriesQueryStub{
+			searchTV: func(_ context.Context, query string) ([]metadata.MatchResult, error) {
+				t.Fatalf("unexpected search fallback query=%q", query)
+				return nil, nil
+			},
+			getEpisode: func(_ context.Context, provider, seriesID string, season, episode int) (*metadata.MatchResult, error) {
+				atomic.AddInt32(&getEpisodeCalls, 1)
+				if provider != "tmdb" || seriesID != "321" || season != 1 || episode != 1 {
+					t.Fatalf("unexpected episode lookup provider=%s series=%s season=%d episode=%d", provider, seriesID, season, episode)
+				}
+				return &metadata.MatchResult{
+					Title:      "Slow Horses - S01E01 - Pilot",
+					Provider:   "tmdb",
+					ExternalID: "321",
+				}, nil
+			},
+		},
+		Series: &seriesDetailsStub{
+			getSeriesDetails: func(_ context.Context, tmdbID int) (*metadata.SeriesDetails, error) {
+				if tmdbID != 321 {
+					t.Fatalf("unexpected series details lookup tmdbID=%d", tmdbID)
+				}
+				return &metadata.SeriesDetails{Name: "Slow Horses"}, nil
+			},
+		},
+	}
+
+	result, err := handler.identifyLibrary(context.Background(), libraryID)
+	if err != nil {
+		t.Fatalf("identify library: %v", err)
+	}
+	if result.Failed != 0 {
+		t.Fatalf("failed = %d", result.Failed)
+	}
+	if result.Identified != 1 {
+		t.Fatalf("identified = %d", result.Identified)
+	}
+	if got := atomic.LoadInt32(&getEpisodeCalls); got != 1 {
+		t.Fatalf("episode calls = %d", got)
+	}
+	if states := handler.identifyRun.stateForLibrary(libraryID); len(states) != 0 {
+		t.Fatalf("unexpected identify states: %+v", states)
+	}
+}
+
+func TestIdentifyLibrary_DoesNotCountMatchedMovieMetadataRefreshAsFailed(t *testing.T) {
+	dbConn, err := db.InitDB(":memory:")
+	if err != nil {
+		t.Fatalf("init db: %v", err)
+	}
+	t.Cleanup(func() { _ = dbConn.Close() })
+
+	now := time.Now().UTC()
+	var userID int
+	if err := dbConn.QueryRow(`INSERT INTO users (email, password_hash, is_admin, created_at) VALUES (?, ?, 1, ?) RETURNING id`, "movie-refresh@test.com", "hash", now).Scan(&userID); err != nil {
+		t.Fatalf("insert user: %v", err)
+	}
+	var libraryID int
+	if err := dbConn.QueryRow(`INSERT INTO libraries (user_id, name, type, path, created_at) VALUES (?, ?, ?, ?, ?) RETURNING id`, userID, "Movies", db.LibraryTypeMovie, "/movies", now).Scan(&libraryID); err != nil {
+		t.Fatalf("insert library: %v", err)
+	}
+
+	if _, err := dbConn.Exec(
+		`INSERT INTO movies (
+			library_id, title, path, duration, match_status, tmdb_id, poster_path, imdb_id
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+		libraryID,
+		"Die My Love",
+		"/movies/Die My Love (2025)/Die My Love.mp4",
+		0,
+		db.MatchStatusIdentified,
+		444,
+		"",
+		"",
+	); err != nil {
+		t.Fatalf("insert movie: %v", err)
+	}
+
+	var identifyCalls int32
+	handler := &LibraryHandler{
+		DB: dbConn,
+		Meta: &identifyStub{
+			movie: func(_ context.Context, info metadata.MediaInfo) *metadata.MatchResult {
+				atomic.AddInt32(&identifyCalls, 1)
+				if info.TMDBID != 444 {
+					t.Fatalf("unexpected movie info: %+v", info)
+				}
+				return &metadata.MatchResult{
+					Title:      "Die My Love",
+					Provider:   "tmdb",
+					ExternalID: "444",
+				}
+			},
+		},
+	}
+
+	result, err := handler.identifyLibrary(context.Background(), libraryID)
+	if err != nil {
+		t.Fatalf("identify library: %v", err)
+	}
+	if result.Failed != 0 {
+		t.Fatalf("failed = %d", result.Failed)
+	}
+	if result.Identified != 1 {
+		t.Fatalf("identified = %d", result.Identified)
+	}
+	if got := atomic.LoadInt32(&identifyCalls); got != 1 {
+		t.Fatalf("identify calls = %d", got)
+	}
+	if states := handler.identifyRun.stateForLibrary(libraryID); len(states) != 0 {
+		t.Fatalf("unexpected identify states: %+v", states)
+	}
+}
+
 func TestIdentifyConfigForKind_UsesIndependentEpisodeTuning(t *testing.T) {
 	prevMovieWorkers := identifyMovieWorkers
 	prevMovieRateLimit := identifyMovieRateLimit

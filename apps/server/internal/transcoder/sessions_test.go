@@ -205,7 +205,7 @@ func TestHandleDisconnectClosesSessionAfterGracePeriod(t *testing.T) {
 		playbackDisconnectGracePeriod = previousGrace
 	})
 
-	if err := manager.Attach(session.id, session.userID, "client-a"); err != nil {
+	if _, err := manager.Attach(session.id, session.userID, "client-a"); err != nil {
 		t.Fatalf("Attach: %v", err)
 	}
 
@@ -233,7 +233,7 @@ func TestAttachCancelsPendingDisconnectClose(t *testing.T) {
 		playbackDisconnectGracePeriod = previousGrace
 	})
 
-	if err := manager.Attach(session.id, session.userID, "client-a"); err != nil {
+	if _, err := manager.Attach(session.id, session.userID, "client-a"); err != nil {
 		t.Fatalf("Attach initial: %v", err)
 	}
 
@@ -241,7 +241,7 @@ func TestAttachCancelsPendingDisconnectClose(t *testing.T) {
 
 	time.Sleep(25 * time.Millisecond)
 
-	if err := manager.Attach(session.id, session.userID, "client-b"); err != nil {
+	if _, err := manager.Attach(session.id, session.userID, "client-b"); err != nil {
 		t.Fatalf("Attach reconnect: %v", err)
 	}
 
@@ -279,10 +279,10 @@ func TestAttachTransfersOwnershipFromPreviousClient(t *testing.T) {
 		playbackDisconnectGracePeriod = previousGrace
 	})
 
-	if err := manager.Attach(session.id, session.userID, "client-a"); err != nil {
+	if _, err := manager.Attach(session.id, session.userID, "client-a"); err != nil {
 		t.Fatalf("Attach initial: %v", err)
 	}
-	if err := manager.Attach(session.id, session.userID, "client-b"); err != nil {
+	if _, err := manager.Attach(session.id, session.userID, "client-b"); err != nil {
 		t.Fatalf("Attach transfer: %v", err)
 	}
 
@@ -299,6 +299,78 @@ func TestAttachTransfersOwnershipFromPreviousClient(t *testing.T) {
 	}
 	if ownedBy != session.id {
 		t.Fatalf("client-b owner = %q, want %q", ownedBy, session.id)
+	}
+}
+
+func TestAttachReturnsReplayStateForReadyRevision(t *testing.T) {
+	manager := NewPlaybackSessionManager(t.TempDir(), nil)
+	session := &playbackSession{
+		id:              "session-ready-replay",
+		userID:          10,
+		media:           db.MediaItem{ID: 16},
+		audioIndex:      2,
+		activeRevision:  3,
+		desiredRevision: 3,
+		revisions: map[int]*playbackRevision{
+			3: {
+				number:     3,
+				delivery:   "transcode",
+				audioIndex: 2,
+				status:     "ready",
+				streamURL:  "/api/playback/sessions/session-ready-replay/revisions/3/index.m3u8",
+			},
+		},
+	}
+
+	manager.mu.Lock()
+	manager.sessions[session.id] = session
+	manager.mu.Unlock()
+
+	state, err := manager.Attach(session.id, session.userID, "client-ready")
+	if err != nil {
+		t.Fatalf("Attach: %v", err)
+	}
+	if state == nil {
+		t.Fatal("expected replay state")
+	}
+	if state.Status != "ready" || state.Revision != 3 || state.AudioIndex != 2 {
+		t.Fatalf("unexpected replay state: %+v", state)
+	}
+}
+
+func TestAttachReturnsReplayStateForErroredRevision(t *testing.T) {
+	manager := NewPlaybackSessionManager(t.TempDir(), nil)
+	session := &playbackSession{
+		id:              "session-error-replay",
+		userID:          11,
+		media:           db.MediaItem{ID: 17},
+		audioIndex:      -1,
+		desiredRevision: 4,
+		revisions: map[int]*playbackRevision{
+			4: {
+				number:     4,
+				delivery:   "transcode",
+				audioIndex: -1,
+				status:     "error",
+				streamURL:  "/api/playback/sessions/session-error-replay/revisions/4/index.m3u8",
+				err:        "transcode failed",
+			},
+		},
+	}
+
+	manager.mu.Lock()
+	manager.sessions[session.id] = session
+	manager.mu.Unlock()
+
+	state, err := manager.Attach(session.id, session.userID, "client-error")
+	if err != nil {
+		t.Fatalf("Attach: %v", err)
+	}
+	if state == nil {
+		t.Fatal("expected replay state")
+	}
+	if state.Status != "error" || state.Error != "transcode failed" || state.Revision != 4 {
+		t.Fatalf("unexpected replay state: %+v", state)
 	}
 }
 

@@ -40,6 +40,14 @@ const IDENTIFY_CONCURRENT_LIBRARIES = 3;
 
 const IdentifyQueueContext = createContext<IdentifyQueueContextValue | null>(null);
 
+function isBackendIdentifyActive(phase?: string) {
+  return phase === "queued" || phase === "identifying";
+}
+
+function isLocalIdentifyActive(phase?: IdentifyLibraryPhase) {
+  return phase === "queued" || phase === "identifying";
+}
+
 function getRouteLibraryId(pathname: string): number | null {
   const match = pathname.match(/\/library\/(\d+)/);
   if (!match) return null;
@@ -240,17 +248,28 @@ export function IdentifyQueueProvider({ children }: { children: ReactNode }) {
     }
 
     for (const libraryId of identifyOrderRef.current) {
-      if (!hasLibraryScanStatus(libraryId)) continue;
       const scanStatus = getLibraryScanStatus(libraryId);
-      const scanPhase = scanStatus?.phase;
-      if (scanPhase === "queued" || scanPhase === "scanning") continue;
-      if (scanStatus?.identifyRequested) continue;
+      if (!hasLibraryScanStatus(libraryId)) {
+        if (!queuedLibsRef.current.has(libraryId) && !activeLibsRef.current.has(libraryId)) {
+          const identifyPhase = identifyPhasesRef.current.get(libraryId);
+          if (identifyPhase === "complete" || identifyPhase === "identify-failed" || identifyPhase === "soft-reveal") {
+            setLibraryIdentifyPhase(libraryId, null);
+          }
+        }
+        continue;
+      }
+
       const identifyPhase = identifyPhasesRef.current.get(libraryId);
-      if (identifyPhase != null) continue;
-      if (queuedLibsRef.current.has(libraryId)) continue;
-      if (activeLibsRef.current.has(libraryId)) continue;
-      queuedLibsRef.current.add(libraryId);
-      setLibraryIdentifyPhase(libraryId, "queued");
+      if (
+        !queuedLibsRef.current.has(libraryId) &&
+        !activeLibsRef.current.has(libraryId) &&
+        !isBackendIdentifyActive(scanStatus?.identifyPhase) &&
+        !isLocalIdentifyActive(identifyPhase)
+      ) {
+        if (identifyPhase === "complete" || identifyPhase === "identify-failed" || identifyPhase === "soft-reveal") {
+          setLibraryIdentifyPhase(libraryId, null);
+        }
+      }
     }
 
     void pumpIdentifyQueue();

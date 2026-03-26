@@ -70,6 +70,19 @@ function mapBackendIdentifyPhase(phase?: string): IdentifyLibraryPhase | undefin
   }
 }
 
+function resolveLibraryIdentifyPhase(
+  localPhase: IdentifyLibraryPhase | undefined,
+  backendPhase: IdentifyLibraryPhase | undefined,
+) {
+  if (localPhase === "queued" || localPhase === "identifying" || localPhase === "soft-reveal") {
+    return localPhase;
+  }
+  if (backendPhase === "queued" || backendPhase === "identifying") {
+    return backendPhase;
+  }
+  return localPhase ?? backendPhase;
+}
+
 function isMovieIncomplete(item: {
   match_status?: string;
   poster_path?: string;
@@ -140,8 +153,10 @@ export function Home() {
   const selectedLibraryBackendIdentifyPhase = mapBackendIdentifyPhase(
     selectedLibraryScanStatus?.identifyPhase,
   );
-  const selectedLibraryIdentifyPhase =
-    getLibraryPhase(selectedLibraryId) ?? selectedLibraryBackendIdentifyPhase;
+  const selectedLibraryIdentifyPhase = resolveLibraryIdentifyPhase(
+    getLibraryPhase(selectedLibraryId),
+    selectedLibraryBackendIdentifyPhase,
+  );
   const selectedLibraryActivity = getLibraryActivity({
     scanPhase: selectedLibraryScanStatus?.phase,
     enriching: selectedLibraryScanStatus?.enriching === true,
@@ -241,15 +256,7 @@ export function Home() {
         confirmShowMutation.variables?.libraryId === selectedLibraryId &&
         confirmShowMutation.variables?.showKey === group.showKey;
       const identifyState = getGroupIdentifyState(group);
-      const hasMatchedEpisode = group.episodes.some(
-        (episode) =>
-          episode.match_status === "identified" ||
-          hasProviderMatch(episode.tmdb_id, episode.tvdb_id),
-      );
-      const isIncomplete =
-        group.unmatchedCount > 0 ||
-        group.localCount > 0 ||
-        (!group.posterPath && hasMatchedEpisode);
+      const isIncomplete = group.unmatchedCount > 0 || group.localCount > 0;
       if (isIncomplete && shouldDeferIncompleteCard(identifyState, selectedLibraryIdentifyPhase)) {
         deferredGroups.push(group);
         return [];

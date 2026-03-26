@@ -5,10 +5,10 @@ import {
   DialogDescription,
   DialogHeader,
   DialogTitle,
-} from "@/components/ui/dialog";
-import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/input";
-import { useIdentifyQueue } from "@/contexts/IdentifyQueueContext";
+} from "./ui/dialog";
+import { Button } from "./ui/button";
+import { Input } from "./ui/input";
+import { useIdentifyQueue } from "../contexts/IdentifyQueueContext";
 import { identifyShow, searchSeries, type SeriesSearchResult } from "../api";
 
 export interface IdentifyShowDialogProps {

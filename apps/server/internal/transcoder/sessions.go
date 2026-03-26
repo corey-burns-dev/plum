@@ -162,19 +162,19 @@ func (m *PlaybackSessionManager) UpdateAudio(sessionID string, settings db.Trans
 	return m.startRevision(session, settings, audioIndex, decision)
 }
 
-func (m *PlaybackSessionManager) Attach(sessionID string, userID int, clientID string) error {
+func (m *PlaybackSessionManager) Attach(sessionID string, userID int, clientID string) (*PlaybackSessionState, error) {
 	m.mu.Lock()
 	session := m.sessions[sessionID]
 	if session == nil {
 		m.mu.Unlock()
-		return db.ErrNotFound
+		return nil, db.ErrNotFound
 	}
 
 	session.mu.Lock()
 	if session.userID != userID {
 		session.mu.Unlock()
 		m.mu.Unlock()
-		return db.ErrNotFound
+		return nil, db.ErrNotFound
 	}
 	previousOwner := session.ownerClientID
 	if session.disconnectTimer != nil {
@@ -182,6 +182,7 @@ func (m *PlaybackSessionManager) Attach(sessionID string, userID int, clientID s
 		session.disconnectTimer = nil
 	}
 	session.ownerClientID = clientID
+	replayState := session.stateForReplayLocked()
 	session.mu.Unlock()
 
 	if previousSessionID, ok := m.clients[clientID]; ok && previousSessionID != sessionID {
@@ -198,7 +199,7 @@ func (m *PlaybackSessionManager) Attach(sessionID string, userID int, clientID s
 	m.mu.Unlock()
 
 	log.Printf("playback session attach session=%s user=%d client=%s", sessionID, userID, clientID)
-	return nil
+	return replayState, nil
 }
 
 func (m *PlaybackSessionManager) Detach(sessionID string, userID int, clientID string) {
@@ -280,6 +281,38 @@ func (m *PlaybackSessionManager) Close(sessionID string) {
 		AudioIndex: audioIndex,
 		Status:     "closed",
 	})
+}
+
+func (s *playbackSession) stateForReplayLocked() *PlaybackSessionState {
+	candidates := []int{s.desiredRevision, s.activeRevision}
+	seen := make(map[int]struct{}, len(candidates))
+	for _, revisionNumber := range candidates {
+		if revisionNumber <= 0 {
+			continue
+		}
+		if _, ok := seen[revisionNumber]; ok {
+			continue
+		}
+		seen[revisionNumber] = struct{}{}
+		revision := s.revisions[revisionNumber]
+		if revision == nil {
+			continue
+		}
+		if revision.status != "ready" && revision.status != "error" {
+			continue
+		}
+		return &PlaybackSessionState{
+			SessionID:  s.id,
+			Delivery:   revision.delivery,
+			MediaID:    s.media.ID,
+			Revision:   revision.number,
+			AudioIndex: revision.audioIndex,
+			Status:     revision.status,
+			StreamURL:  revision.streamURL,
+			Error:      revision.err,
+		}
+	}
+	return nil
 }
 
 func (m *PlaybackSessionManager) ServeFile(w http.ResponseWriter, r *http.Request, sessionID string, revisionNumber int, name string) error {

@@ -54,8 +54,39 @@ func handlePlaybackSessionCommand(sessions *transcoder.PlaybackSessionManager, c
 
 	switch command.Action {
 	case "attach_playback_session":
-		if err := sessions.Attach(command.SessionID, client.User().ID, client.ID()); err != nil {
+		state, err := sessions.Attach(command.SessionID, client.User().ID, client.ID())
+		if err != nil {
 			log.Printf("attach playback session session=%s client=%s user=%d error=%v", command.SessionID, client.ID(), client.User().ID, err)
+			return
+		}
+		if state != nil {
+			payload, marshalErr := json.Marshal(map[string]any{
+				"type":       "playback_session_update",
+				"sessionId":  state.SessionID,
+				"delivery":   state.Delivery,
+				"mediaId":    state.MediaID,
+				"revision":   state.Revision,
+				"audioIndex": state.AudioIndex,
+				"status":     state.Status,
+				"streamUrl":  state.StreamURL,
+				"error":      state.Error,
+			})
+			if marshalErr != nil {
+				log.Printf("attach playback session marshal replay session=%s client=%s user=%d error=%v", command.SessionID, client.ID(), client.User().ID, marshalErr)
+				return
+			}
+			if !client.Send(payload) {
+				log.Printf("attach playback session replay dropped session=%s client=%s user=%d", command.SessionID, client.ID(), client.User().ID)
+				return
+			}
+			log.Printf(
+				"attach playback session replay session=%s client=%s user=%d status=%s revision=%d",
+				command.SessionID,
+				client.ID(),
+				client.User().ID,
+				state.Status,
+				state.Revision,
+			)
 		}
 	case "detach_playback_session":
 		sessions.Detach(command.SessionID, client.User().ID, client.ID())

@@ -976,12 +976,28 @@ func (h *LibraryHandler) identifyLibrary(ctx context.Context, libraryID int) (id
 			h.identifyRun.clearLibrary(libraryID)
 			return identifyResult{Identified: 0, Failed: 0}, nil
 		}
+		trackedRows, refreshOnlyRows := splitEpisodeIdentifyRows(rows)
 		if h.identifyRun == nil {
 			h.identifyRun = newIdentifyRunTracker()
 		}
-		h.identifyRun.startLibrary(libraryID, identificationRowsFromEpisodeRows(rows))
-		defer h.identifyRun.finishLibrary(libraryID)
-		return h.identifyEpisodesByGroup(ctx, libraryID, libraryPath, libraryType, rows)
+		if len(trackedRows) > 0 {
+			h.identifyRun.startLibrary(libraryID, identificationRowsFromEpisodeRows(trackedRows))
+			defer h.identifyRun.finishLibrary(libraryID)
+		} else {
+			h.identifyRun.clearLibrary(libraryID)
+		}
+		log.Printf(
+			"identify library=%d type=%s tracked_rows=%d refresh_rows=%d",
+			libraryID,
+			libraryType,
+			len(trackedRows),
+			len(refreshOnlyRows),
+		)
+		identified, failed, err := h.identifyEpisodeRowsWithRefresh(ctx, libraryID, libraryPath, libraryType, trackedRows, refreshOnlyRows)
+		if err != nil {
+			return identifyResult{}, err
+		}
+		return identifyResult{Identified: identified, Failed: failed}, nil
 	}
 
 	rows, err := db.ListIdentifiableByLibrary(h.DB, libraryID)
@@ -992,20 +1008,32 @@ func (h *LibraryHandler) identifyLibrary(ctx context.Context, libraryID int) (id
 		h.identifyRun.clearLibrary(libraryID)
 		return identifyResult{Identified: 0, Failed: 0}, nil
 	}
+	trackedRows, refreshOnlyRows := splitIdentifyRows(rows)
 	if h.identifyRun == nil {
 		h.identifyRun = newIdentifyRunTracker()
 	}
-	h.identifyRun.startLibrary(libraryID, rows)
-	defer h.identifyRun.finishLibrary(libraryID)
+	if len(trackedRows) > 0 {
+		h.identifyRun.startLibrary(libraryID, trackedRows)
+		defer h.identifyRun.finishLibrary(libraryID)
+	} else {
+		h.identifyRun.clearLibrary(libraryID)
+	}
+	log.Printf(
+		"identify library=%d type=%s tracked_rows=%d refresh_rows=%d",
+		libraryID,
+		libraryType,
+		len(trackedRows),
+		len(refreshOnlyRows),
+	)
 
 	identified, failed := 0, 0
-	initialJobs := make([]identifyJob, 0, len(rows))
-	for _, row := range rows {
+	initialJobs := make([]identifyJob, 0, len(trackedRows))
+	for _, row := range trackedRows {
 		initialJobs = append(initialJobs, identifyJob{row: row})
 	}
 	sortIdentifyJobs(initialJobs, libraryPath)
 	var movieCache *movieIdentifyCache
-	if rows[0].Kind == db.LibraryTypeMovie {
+	if len(rows) > 0 && rows[0].Kind == db.LibraryTypeMovie {
 		movieCache = newMovieIdentifyCache()
 	}
 	initialIdentified, retryJobs, initialFailed := h.runIdentifyJobs(ctx, libraryID, libraryPath, initialJobs, movieCache, true)
@@ -1015,8 +1043,98 @@ func (h *LibraryHandler) identifyLibrary(ctx context.Context, libraryID int) (id
 	fallbackIdentified, fallbackFailed := h.identifyShowFallbacks(ctx, libraryID, libraryPath, append(initialFailed, retryFailed...), nil, true)
 	identified += fallbackIdentified
 	failed += fallbackFailed
+	if len(refreshOnlyRows) > 0 {
+		refreshIdentified, refreshErr := h.refreshMatchedRows(ctx, libraryID, libraryPath, refreshOnlyRows, movieCache)
+		if refreshErr != nil {
+			log.Printf("identify refresh-only rows failed library=%d type=%s error=%v", libraryID, libraryType, refreshErr)
+		}
+		identified += refreshIdentified
+	}
 
 	return identifyResult{Identified: identified, Failed: failed}, nil
+}
+
+func hasProviderMatch(row db.IdentificationRow) bool {
+	return row.TMDBID > 0 || strings.TrimSpace(row.TVDBID) != ""
+}
+
+func rowNeedsTrackedIdentify(row db.IdentificationRow) bool {
+	return row.MatchStatus != db.MatchStatusIdentified || !hasProviderMatch(row)
+}
+
+func splitIdentifyRows(rows []db.IdentificationRow) (tracked []db.IdentificationRow, refreshOnly []db.IdentificationRow) {
+	tracked = make([]db.IdentificationRow, 0, len(rows))
+	refreshOnly = make([]db.IdentificationRow, 0, len(rows))
+	for _, row := range rows {
+		if rowNeedsTrackedIdentify(row) {
+			tracked = append(tracked, row)
+			continue
+		}
+		refreshOnly = append(refreshOnly, row)
+	}
+	return tracked, refreshOnly
+}
+
+func splitEpisodeIdentifyRows(rows []db.EpisodeIdentifyRow) (tracked []db.EpisodeIdentifyRow, refreshOnly []db.EpisodeIdentifyRow) {
+	tracked = make([]db.EpisodeIdentifyRow, 0, len(rows))
+	refreshOnly = make([]db.EpisodeIdentifyRow, 0, len(rows))
+	for _, row := range rows {
+		if rowNeedsTrackedIdentify(row.IdentificationRow) {
+			tracked = append(tracked, row)
+			continue
+		}
+		refreshOnly = append(refreshOnly, row)
+	}
+	return tracked, refreshOnly
+}
+
+func (h *LibraryHandler) refreshMatchedRows(
+	ctx context.Context,
+	libraryID int,
+	libraryPath string,
+	rows []db.IdentificationRow,
+	movieCache *movieIdentifyCache,
+) (int, error) {
+	if len(rows) == 0 {
+		return 0, nil
+	}
+	jobs := make([]identifyJob, 0, len(rows))
+	for _, row := range rows {
+		jobs = append(jobs, identifyJob{row: row})
+	}
+	sortIdentifyJobs(jobs, libraryPath)
+	identified, retryJobs, initialFailed := h.runIdentifyJobs(ctx, libraryID, libraryPath, jobs, movieCache, true)
+	retryIdentified, _, retryFailed := h.runIdentifyJobs(ctx, libraryID, libraryPath, retryJobs, movieCache, true)
+	identified += retryIdentified
+	refreshIdentified, _ := h.identifyShowFallbacks(ctx, libraryID, libraryPath, append(initialFailed, retryFailed...), nil, true)
+	return identified + refreshIdentified, nil
+}
+
+func (h *LibraryHandler) identifyEpisodeRowsWithRefresh(
+	ctx context.Context,
+	libraryID int,
+	libraryPath string,
+	libraryType string,
+	trackedRows []db.EpisodeIdentifyRow,
+	refreshOnlyRows []db.EpisodeIdentifyRow,
+) (identified int, failed int, err error) {
+	if len(trackedRows) > 0 {
+		trackedResult, trackErr := h.identifyEpisodesByGroup(ctx, libraryID, libraryPath, libraryType, trackedRows)
+		if trackErr != nil {
+			return 0, 0, trackErr
+		}
+		identified += trackedResult.Identified
+		failed += trackedResult.Failed
+	}
+	if len(refreshOnlyRows) > 0 {
+		refreshResult, refreshErr := h.identifyEpisodesByGroup(ctx, libraryID, libraryPath, libraryType, refreshOnlyRows)
+		if refreshErr != nil {
+			log.Printf("identify refresh-only episode rows failed library=%d type=%s error=%v", libraryID, libraryType, refreshErr)
+		} else {
+			identified += refreshResult.Identified
+		}
+	}
+	return identified, failed, nil
 }
 
 func (h *LibraryHandler) runIdentifyJobs(
@@ -2008,9 +2126,18 @@ func (h *LibraryHandler) applyTMDBSeriesToRefs(
 func identifyMediaInfo(row db.IdentificationRow, libraryPath string) metadata.MediaInfo {
 	base := filepath.Base(row.Path)
 	relPath, _ := filepath.Rel(libraryPath, row.Path)
+	applyProviderHints := func(info metadata.MediaInfo) metadata.MediaInfo {
+		if info.TMDBID <= 0 && row.TMDBID > 0 {
+			info.TMDBID = row.TMDBID
+		}
+		if info.TVDBID == "" && row.TVDBID != "" {
+			info.TVDBID = row.TVDBID
+		}
+		return info
+	}
 	switch row.Kind {
 	case db.LibraryTypeMovie:
-		return metadata.MovieMediaInfo(metadata.ParseMovie(relPath, base))
+		return applyProviderHints(metadata.MovieMediaInfo(metadata.ParseMovie(relPath, base)))
 	case db.LibraryTypeTV, db.LibraryTypeAnime:
 		info := metadata.ParseFilename(base)
 		pathInfo := metadata.ParsePathForTV(relPath, base)
@@ -2020,9 +2147,9 @@ func identifyMediaInfo(row db.IdentificationRow, libraryPath string) metadata.Me
 		if row.Kind == db.LibraryTypeAnime && info.IsSpecial && info.Episode > 0 {
 			info.Season = 0
 		}
-		return info
+		return applyProviderHints(info)
 	default:
-		return metadata.ParseFilename(base)
+		return applyProviderHints(metadata.ParseFilename(base))
 	}
 }
 

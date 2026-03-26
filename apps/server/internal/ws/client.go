@@ -40,6 +40,15 @@ func (c *Client) User() *db.User {
 	return c.user
 }
 
+func (c *Client) Send(msg []byte) bool {
+	select {
+	case c.send <- msg:
+		return true
+	default:
+		return false
+	}
+}
+
 func ServeWS(hub *Hub, w http.ResponseWriter, r *http.Request, options ServeOptions) error {
 	upgrader := websocket.Upgrader{
 		CheckOrigin: options.CheckOrigin,

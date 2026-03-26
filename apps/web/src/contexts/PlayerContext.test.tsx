@@ -7,13 +7,6 @@ import {
 } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-vi.mock("../api", async () => {
-  const actual = await vi.importActual<typeof import("../api")>("../api");
-  return {
-    ...actual,
-    BASE_URL: "http://localhost:3000",
-  };
-});
 import type { MediaItem } from "../api";
 import * as api from "../api";
 import { PlayerProvider, usePlayer } from "./PlayerContext";
@@ -29,6 +22,101 @@ type MockWebSocketClass = {
   instances: MockWebSocketHandle[];
   reset: () => void;
 };
+
+class MockWebSocket {
+  static CONNECTING = 0;
+  static OPEN = 1;
+  static CLOSING = 2;
+  static CLOSED = 3;
+  static instances: MockWebSocket[] = [];
+
+  static reset() {
+    MockWebSocket.instances = [];
+  }
+
+  onopen: ((event: Event) => void) | null = null;
+  onmessage: ((event: MessageEvent) => void) | null = null;
+  onerror: ((event: Event) => void) | null = null;
+  onclose: ((event: CloseEvent) => void) | null = null;
+
+  private listeners: Record<string, Set<(event: Event) => void>> = {
+    open: new Set(),
+    message: new Set(),
+    error: new Set(),
+    close: new Set(),
+  };
+
+  readyState: number = MockWebSocket.CONNECTING;
+  sentMessages: string[] = [];
+  url: string;
+
+  constructor(url: string) {
+    this.url = url;
+    MockWebSocket.instances.push(this);
+    setTimeout(() => {
+      this.readyState = MockWebSocket.OPEN;
+      this.emit("open", new Event("open"));
+    }, 0);
+  }
+
+  send(data: string | ArrayBufferLike | Blob | ArrayBufferView) {
+    if (typeof data === "string") {
+      this.sentMessages.push(data);
+    }
+  }
+
+  close(code?: number, reason?: string) {
+    this.readyState = MockWebSocket.CLOSED;
+    this.emit("close", {
+      code: code ?? 1000,
+      reason: reason ?? "",
+      wasClean: true,
+    } as CloseEvent);
+  }
+
+  private emit(type: string, event: Event) {
+    if (type === "open") {
+      this.onopen?.(event);
+    } else if (type === "message") {
+      this.onmessage?.(event as MessageEvent);
+    } else if (type === "error") {
+      this.onerror?.(event);
+    } else if (type === "close") {
+      this.onclose?.(event as CloseEvent);
+    }
+
+    const listeners = this.listeners[type];
+    if (!listeners) return;
+    for (const listener of listeners) {
+      listener(event);
+    }
+  }
+
+  addEventListener(type: string, listener: EventListener) {
+    const listeners = this.listeners[type];
+    if (!listeners) return;
+    listeners.add(listener as (event: Event) => void);
+  }
+
+  removeEventListener(type: string, listener: EventListener) {
+    const listeners = this.listeners[type];
+    if (!listeners) return;
+    listeners.delete(listener as (event: Event) => void);
+  }
+
+  dispatchEvent() {
+    return true;
+  }
+
+  mockMessage(data: string) {
+    this.emit("message", {
+      data,
+    } as MessageEvent);
+  }
+}
+
+(globalThis as typeof globalThis & { WebSocket: typeof WebSocket }).WebSocket =
+  MockWebSocket as unknown as typeof WebSocket;
 
 const movie: MediaItem = {
   id: 99,

@@ -1514,12 +1514,15 @@ func MediaTableForKind(kind string) string {
 
 // IdentificationRow is a library media row eligible for metadata identification or repair.
 type IdentificationRow struct {
-	RefID   int
-	Kind    string
-	Title   string
-	Path    string
-	Season  int
-	Episode int
+	RefID       int
+	Kind        string
+	Title       string
+	Path        string
+	Season      int
+	Episode     int
+	MatchStatus string
+	TMDBID      int
+	TVDBID      string
 }
 
 type EpisodeIdentifyRow struct {
@@ -1553,7 +1556,7 @@ func ListIdentifiableByLibrary(db *sql.DB, libraryID int) ([]IdentificationRow, 
 	var q string
 	var args []interface{}
 	if table == "tv_episodes" || table == "anime_episodes" {
-		q = `SELECT m.id, m.title, m.path, COALESCE(m.season, 0), COALESCE(m.episode, 0) FROM ` + table + ` m
+		q = `SELECT m.id, m.title, m.path, COALESCE(m.season, 0), COALESCE(m.episode, 0), COALESCE(m.match_status, ''), COALESCE(m.tmdb_id, 0), COALESCE(m.tvdb_id, '') FROM ` + table + ` m
 WHERE m.library_id = ?
   AND COALESCE(m.metadata_confirmed, 0) = 0
   AND (
@@ -1566,7 +1569,7 @@ WHERE m.library_id = ?
   )`
 		args = []interface{}{libraryID, MatchStatusIdentified, refreshBefore}
 	} else {
-		q = `SELECT m.id, m.title, m.path FROM ` + table + ` m
+		q = `SELECT m.id, m.title, m.path, COALESCE(m.match_status, ''), COALESCE(m.tmdb_id, 0), COALESCE(m.tvdb_id, '') FROM ` + table + ` m
 WHERE m.library_id = ?
   AND (
     COALESCE(m.match_status, '') != ? OR
@@ -1586,9 +1589,18 @@ WHERE m.library_id = ?
 		var row IdentificationRow
 		row.Kind = typ
 		if table == "tv_episodes" || table == "anime_episodes" {
-			err = rows.Scan(&row.RefID, &row.Title, &row.Path, &row.Season, &row.Episode)
+			err = rows.Scan(
+				&row.RefID,
+				&row.Title,
+				&row.Path,
+				&row.Season,
+				&row.Episode,
+				&row.MatchStatus,
+				&row.TMDBID,
+				&row.TVDBID,
+			)
 		} else {
-			err = rows.Scan(&row.RefID, &row.Title, &row.Path)
+			err = rows.Scan(&row.RefID, &row.Title, &row.Path, &row.MatchStatus, &row.TMDBID, &row.TVDBID)
 		}
 		if err != nil {
 			return nil, err
@@ -1612,7 +1624,7 @@ func ListEpisodeIdentifyRowsByLibrary(db *sql.DB, libraryID int) ([]EpisodeIdent
 	}
 	policy := GetMetadataRefreshPolicy(db)
 	refreshBefore := time.Now().UTC().Add(-time.Duration(policy.ScanRefreshMinAgeHours) * time.Hour).Format(time.RFC3339)
-	rows, err := db.Query(`SELECT m.id, m.title, m.path, COALESCE(m.season, 0), COALESCE(m.episode, 0), COALESCE(m.tmdb_id, 0), COALESCE(m.tvdb_id, '')
+	rows, err := db.Query(`SELECT m.id, m.title, m.path, COALESCE(m.season, 0), COALESCE(m.episode, 0), COALESCE(m.match_status, ''), COALESCE(m.tmdb_id, 0), COALESCE(m.tvdb_id, '')
 FROM `+table+` m
 WHERE m.library_id = ?
   AND COALESCE(m.metadata_confirmed, 0) = 0
@@ -1633,7 +1645,16 @@ WHERE m.library_id = ?
 	for rows.Next() {
 		var row EpisodeIdentifyRow
 		row.Kind = typ
-		if err := rows.Scan(&row.RefID, &row.Title, &row.Path, &row.Season, &row.Episode, &row.TMDBID, &row.TVDBID); err != nil {
+		if err := rows.Scan(
+			&row.RefID,
+			&row.Title,
+			&row.Path,
+			&row.Season,
+			&row.Episode,
+			&row.MatchStatus,
+			&row.TMDBID,
+			&row.TVDBID,
+		); err != nil {
 			return nil, err
 		}
 		out = append(out, row)
