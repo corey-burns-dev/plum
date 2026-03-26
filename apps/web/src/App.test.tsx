@@ -1056,6 +1056,34 @@ describe("App library and player wiring", () => {
     });
   });
 
+  it("does not show a review prompt for auto-confirmed TV fallback matches", async () => {
+    vi.spyOn(api, "listLibraries").mockResolvedValue([
+      { id: 1, name: "TV", type: "tv", path: "/tv", user_id: 1 },
+    ]);
+    vi.spyOn(api, "fetchLibraryMedia").mockResolvedValue([
+      {
+        id: 42,
+        title: "Slow Horses - S01E01 - Failure's Contagious",
+        path: "/tv/Slow Horses/S01E01.mkv",
+        duration: 1800,
+        type: "tv",
+        match_status: "identified",
+        tmdb_id: 321,
+        poster_path: "/slow-horses.jpg",
+        metadata_review_needed: false,
+        season: 1,
+        episode: 1,
+      },
+    ]);
+    vi.mocked(api.identifyLibrary).mockResolvedValue({ identified: 1, failed: 0 });
+
+    await renderApp();
+
+    expect(await screen.findByRole("link", { name: /Slow Horses/i })).toBeTruthy();
+    expect(screen.queryByText("Is this correct?")).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /Confirm/i })).not.toBeInTheDocument();
+  });
+
   it("applies manual identify for unmatched TV shows and restarts library identify", async () => {
     vi.spyOn(api, "listLibraries").mockResolvedValue([
       { id: 1, name: "TV", type: "tv", path: "/tv", user_id: 1 },

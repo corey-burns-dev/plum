@@ -425,7 +425,7 @@ func TestIdentifyLibrary_UsesAnimeIdentifier(t *testing.T) {
 	}
 }
 
-func TestIdentifyLibrary_UsesAnimeSearchFallbackAndMarksReviewNeeded(t *testing.T) {
+func TestIdentifyLibrary_UsesAnimeSearchFallbackAndAutoConfirmsExactMatch(t *testing.T) {
 	dbConn, err := db.InitDB(":memory:")
 	if err != nil {
 		t.Fatalf("init db: %v", err)
@@ -520,12 +520,12 @@ func TestIdentifyLibrary_UsesAnimeSearchFallbackAndMarksReviewNeeded(t *testing.
 	if tmdbID != 123 {
 		t.Fatalf("tmdb_id = %d", tmdbID)
 	}
-	if !reviewNeeded {
-		t.Fatal("expected metadata_review_needed to be true")
+	if reviewNeeded {
+		t.Fatal("expected metadata_review_needed to be false")
 	}
 }
 
-func TestIdentifyLibrary_UsesTVSearchFallbackAndMarksReviewNeeded(t *testing.T) {
+func TestIdentifyLibrary_UsesTVSearchFallbackAndAutoConfirmsExactMatch(t *testing.T) {
 	dbConn, err := db.InitDB(":memory:")
 	if err != nil {
 		t.Fatalf("init db: %v", err)
@@ -578,6 +578,114 @@ func TestIdentifyLibrary_UsesTVSearchFallbackAndMarksReviewNeeded(t *testing.T) 
 					Title:      "Slow Horses - S01E01 - Failure's Contagious",
 					Provider:   "tmdb",
 					ExternalID: "321",
+				}, nil
+			},
+		},
+	}
+
+	req := httptest.NewRequest(http.MethodPost, "/api/libraries/"+strconv.Itoa(libraryID)+"/identify", nil)
+	rctx := chi.NewRouteContext()
+	rctx.URLParams.Add("id", strconv.Itoa(libraryID))
+	req = req.WithContext(context.WithValue(withUser(req.Context(), &db.User{ID: userID, IsAdmin: true}), chi.RouteCtxKey, rctx))
+	rec := httptest.NewRecorder()
+
+	handler.IdentifyLibrary(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d body=%s", rec.Code, rec.Body.String())
+	}
+	var payload struct {
+		Identified int `json:"identified"`
+		Failed     int `json:"failed"`
+	}
+	if err := json.NewDecoder(rec.Body).Decode(&payload); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if payload.Identified != 1 || payload.Failed != 0 {
+		t.Fatalf("unexpected payload: %+v", payload)
+	}
+
+	var title, matchStatus string
+	var tmdbID int
+	var reviewNeeded bool
+	if err := dbConn.QueryRow(`SELECT title, match_status, COALESCE(tmdb_id, 0), COALESCE(metadata_review_needed, 0) FROM tv_episodes WHERE id = ?`, episodeID).Scan(&title, &matchStatus, &tmdbID, &reviewNeeded); err != nil {
+		t.Fatalf("query tv episode: %v", err)
+	}
+	if title != "Slow Horses - S01E01 - Failure's Contagious" {
+		t.Fatalf("title = %q", title)
+	}
+	if matchStatus != db.MatchStatusIdentified {
+		t.Fatalf("match_status = %q", matchStatus)
+	}
+	if tmdbID != 321 {
+		t.Fatalf("tmdb_id = %d", tmdbID)
+	}
+	if reviewNeeded {
+		t.Fatal("expected metadata_review_needed to be false")
+	}
+}
+
+func TestIdentifyLibrary_UsesTVSearchFallbackAndMarksAmbiguousMatchForReview(t *testing.T) {
+	dbConn, err := db.InitDB(":memory:")
+	if err != nil {
+		t.Fatalf("init db: %v", err)
+	}
+	t.Cleanup(func() { _ = dbConn.Close() })
+
+	now := time.Now().UTC()
+	var userID int
+	if err := dbConn.QueryRow(`INSERT INTO users (email, password_hash, is_admin, created_at) VALUES (?, ?, 1, ?) RETURNING id`, "ambiguous@test.com", "hash", now).Scan(&userID); err != nil {
+		t.Fatalf("insert user: %v", err)
+	}
+	var libraryID int
+	if err := dbConn.QueryRow(`INSERT INTO libraries (user_id, name, type, path, created_at) VALUES (?, ?, ?, ?, ?) RETURNING id`, userID, "TV", db.LibraryTypeTV, "/tv", now).Scan(&libraryID); err != nil {
+		t.Fatalf("insert library: %v", err)
+	}
+	var episodeID int
+	path := "/tv/Slow Horses/Season 1/Slow Horses - S01E01.mkv"
+	if err := dbConn.QueryRow(`INSERT INTO tv_episodes (library_id, title, path, duration, match_status, season, episode) VALUES (?, ?, ?, ?, ?, ?, ?) RETURNING id`, libraryID, "Slow Horses - S01E01", path, 0, db.MatchStatusUnmatched, 1, 1).Scan(&episodeID); err != nil {
+		t.Fatalf("insert tv episode: %v", err)
+	}
+
+	handler := &LibraryHandler{
+		DB: dbConn,
+		Meta: &identifyStub{
+			tv: func(_ context.Context, _ metadata.MediaInfo) *metadata.MatchResult {
+				return nil
+			},
+		},
+		SeriesQuery: &seriesQueryStub{
+			searchTV: func(_ context.Context, query string) ([]metadata.MatchResult, error) {
+				if query != "Slow Horses" {
+					t.Fatalf("query = %q", query)
+				}
+				return []metadata.MatchResult{
+					{
+						Title:      "Slow Horses",
+						Provider:   "tmdb",
+						ExternalID: "321",
+					},
+					{
+						Title:      "Slow Horses",
+						Provider:   "tmdb",
+						ExternalID: "654",
+					},
+				}, nil
+			},
+			getEpisode: func(_ context.Context, provider, seriesID string, season, episode int) (*metadata.MatchResult, error) {
+				if provider != "tmdb" {
+					t.Fatalf("unexpected provider = %q", provider)
+				}
+				if seriesID != "321" && seriesID != "654" {
+					t.Fatalf("unexpected series id = %q", seriesID)
+				}
+				if season != 1 || episode != 1 {
+					t.Fatalf("unexpected episode = S%02dE%02d", season, episode)
+				}
+				return &metadata.MatchResult{
+					Title:      "Slow Horses - S01E01 - Failure's Contagious",
+					Provider:   "tmdb",
+					ExternalID: seriesID,
 				}, nil
 			},
 		},
@@ -1514,6 +1622,13 @@ func TestIdentifyLibrary_GroupsTVEpisodesByShow(t *testing.T) {
 	}
 	if got := atomic.LoadInt32(&queueCalls); got != 1 {
 		t.Fatalf("queue calls = %d", got)
+	}
+	var reviewNeededCount int
+	if err := dbConn.QueryRow(`SELECT COUNT(*) FROM tv_episodes WHERE library_id = ? AND COALESCE(metadata_review_needed, 0) = 1`, libraryID).Scan(&reviewNeededCount); err != nil {
+		t.Fatalf("count review-needed episodes: %v", err)
+	}
+	if reviewNeededCount != 0 {
+		t.Fatalf("review-needed episodes = %d", reviewNeededCount)
 	}
 }
 

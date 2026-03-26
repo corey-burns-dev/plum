@@ -1134,7 +1134,7 @@ func (h *LibraryHandler) identifyShowFallbacks(
 	}
 
 	for _, group := range groups {
-		updated, err := h.identifyShowFallbackGroup(ctx, group.queries, group.rows, cache, queueSearch)
+		updated, err := h.identifyShowFallbackGroup(ctx, libraryPath, group.queries, group.rows, cache, queueSearch)
 		if err != nil || updated != len(group.rows) {
 			h.identifyRun.failRows(libraryID, group.rows[updated:])
 			identified += updated
@@ -1408,14 +1408,135 @@ enqueueLoop:
 	return identified, retryGroups, failed
 }
 
-func (h *LibraryHandler) resolveTMDBSeriesIDForGroup(
+type tmdbSeriesSelection struct {
+	tmdbID               int
+	metadataReviewNeeded bool
+}
+
+func fallbackIdentifyInfo(row db.IdentificationRow, libraryPath string) metadata.MediaInfo {
+	info := identifyMediaInfo(row, libraryPath)
+	if info.Season == 0 {
+		info.Season = row.Season
+	}
+	if info.Episode == 0 {
+		info.Episode = row.Episode
+	}
+	if info.Title == "" {
+		info.Title = row.Title
+	}
+	return info
+}
+
+func scoredTMDBSeriesMatch(
+	candidates []metadata.MatchResult,
+	info metadata.MediaInfo,
+) (best *metadata.MatchResult, topScore int, secondScore int, hasSecond bool) {
+	type scored struct {
+		match *metadata.MatchResult
+		score int
+	}
+	scores := make([]scored, 0, len(candidates))
+	for i := range candidates {
+		candidate := &candidates[i]
+		if candidate.Provider != "tmdb" {
+			continue
+		}
+		if tmdbID, err := strconv.Atoi(candidate.ExternalID); err != nil || tmdbID <= 0 {
+			continue
+		}
+		scores = append(scores, scored{
+			match: candidate,
+			score: metadata.ScoreTV(candidate, info),
+		})
+	}
+	if len(scores) == 0 {
+		return nil, 0, 0, false
+	}
+	sort.SliceStable(scores, func(i, j int) bool {
+		return scores[i].score > scores[j].score
+	})
+	best = scores[0].match
+	topScore = scores[0].score
+	if len(scores) > 1 {
+		secondScore = scores[1].score
+		hasSecond = true
+	}
+	return best, topScore, secondScore, hasSecond
+}
+
+func (h *LibraryHandler) selectTMDBSeriesFallback(
+	ctx context.Context,
+	libraryPath string,
+	representative db.IdentificationRow,
+	queries []string,
+	cache *episodicIdentifyCache,
+) (tmdbSeriesSelection, error) {
+	info := fallbackIdentifyInfo(representative, libraryPath)
+	seenQueries := make(map[string]struct{}, len(queries))
+	bestTentative := tmdbSeriesSelection{}
+	bestTentativeScore := 0
+	hasTentative := false
+
+	for _, query := range queries {
+		query = strings.TrimSpace(query)
+		if query == "" {
+			continue
+		}
+		key := strings.ToLower(query)
+		if _, ok := seenQueries[key]; ok {
+			continue
+		}
+		seenQueries[key] = struct{}{}
+
+		var (
+			results []metadata.MatchResult
+			err     error
+		)
+		if cache != nil {
+			results, err = cache.SearchTV(ctx, query)
+		} else {
+			results, err = h.SeriesQuery.SearchTV(ctx, query)
+		}
+		if err != nil {
+			return tmdbSeriesSelection{}, err
+		}
+
+		best, topScore, secondScore, hasSecond := scoredTMDBSeriesMatch(results, info)
+		if best == nil {
+			continue
+		}
+		tmdbID, err := strconv.Atoi(best.ExternalID)
+		if err != nil || tmdbID <= 0 {
+			continue
+		}
+		if topScore >= metadata.ScoreAutoMatch &&
+			(!hasSecond || (topScore-secondScore) >= metadata.ScoreMargin) {
+			return tmdbSeriesSelection{tmdbID: tmdbID, metadataReviewNeeded: false}, nil
+		}
+		if !hasTentative || topScore > bestTentativeScore {
+			bestTentative = tmdbSeriesSelection{
+				tmdbID:               tmdbID,
+				metadataReviewNeeded: true,
+			}
+			bestTentativeScore = topScore
+			hasTentative = true
+		}
+	}
+
+	if hasTentative {
+		return bestTentative, nil
+	}
+	return tmdbSeriesSelection{}, nil
+}
+
+func (h *LibraryHandler) resolveTMDBSeriesSelectionForGroup(
 	ctx context.Context,
 	libraryPath string,
 	group episodeIdentifyGroup,
 	cache *episodicIdentifyCache,
-) (int, error) {
+) (tmdbSeriesSelection, error) {
 	if group.explicitTMDBID > 0 {
-		return group.explicitTMDBID, nil
+		return tmdbSeriesSelection{tmdbID: group.explicitTMDBID}, nil
 	}
 	queries := make([]string, 0, len(group.fallbackQueries)+1)
 	if group.groupQuery != "" {
@@ -1436,54 +1557,7 @@ func (h *LibraryHandler) resolveTMDBSeriesIDForGroup(
 			queries = append(queries, query)
 		}
 	}
-	for _, query := range queries {
-		results, err := cache.SearchTV(ctx, query)
-		if err != nil {
-			return 0, err
-		}
-		if len(results) == 0 {
-			continue
-		}
-		info := identifyMediaInfo(group.representative.IdentificationRow, libraryPath)
-		best, _ := metadataBestSeriesMatch(results, info)
-		if best == nil {
-			best = &results[0]
-		}
-		if best.Provider != "tmdb" {
-			continue
-		}
-		tmdbID, err := strconv.Atoi(best.ExternalID)
-		if err == nil && tmdbID > 0 {
-			return tmdbID, nil
-		}
-	}
-	return 0, nil
-}
-
-func metadataBestSeriesMatch(candidates []metadata.MatchResult, info metadata.MediaInfo) (*metadata.MatchResult, int) {
-	best, score := bestScoredIdentify(candidates, info)
-	return best, score
-}
-
-func bestScoredIdentify(candidates []metadata.MatchResult, info metadata.MediaInfo) (*metadata.MatchResult, int) {
-	if len(candidates) == 0 {
-		return nil, 0
-	}
-	type scored struct {
-		match *metadata.MatchResult
-		score int
-	}
-	scores := make([]scored, len(candidates))
-	for i := range candidates {
-		scores[i] = scored{
-			match: &candidates[i],
-			score: metadata.ScoreTV(&candidates[i], info),
-		}
-	}
-	sort.Slice(scores, func(i, j int) bool {
-		return scores[i].score > scores[j].score
-	})
-	return scores[0].match, scores[0].score
+	return h.selectTMDBSeriesFallback(ctx, libraryPath, group.representative.IdentificationRow, queries, cache)
 }
 
 func (h *LibraryHandler) identifyEpisodeGroup(
@@ -1504,8 +1578,8 @@ func (h *LibraryHandler) identifyEpisodeGroup(
 	itemCtx, cancel := context.WithTimeout(ctx, identifyTimeoutForAttempt(job.attempt))
 	defer cancel()
 
-	tmdbID, err := h.resolveTMDBSeriesIDForGroup(itemCtx, libraryPath, job.group, cache)
-	if err != nil || tmdbID <= 0 {
+	selection, err := h.resolveTMDBSeriesSelectionForGroup(itemCtx, libraryPath, job.group, cache)
+	if err != nil || selection.tmdbID <= 0 {
 		if err == nil && job.attempt == 0 {
 			identifyGroupRowsAsQueued(h.identifyRun, libraryID, job.group.rows)
 			return 0, true, nil
@@ -1523,7 +1597,15 @@ func (h *LibraryHandler) identifyEpisodeGroup(
 			Episode: row.Episode,
 		})
 	}
-	updatedRefIDs, err := h.applySeriesToRefs(itemCtx, tmdbID, refs, true, false, cache, false)
+	updatedRefIDs, err := h.applySeriesToRefs(
+		itemCtx,
+		selection.tmdbID,
+		refs,
+		selection.metadataReviewNeeded,
+		false,
+		cache,
+		false,
+	)
 	if err != nil || len(updatedRefIDs) == 0 {
 		if err == nil && job.attempt == 0 {
 			identifyGroupRowsAsQueued(h.identifyRun, libraryID, job.group.rows)
@@ -1757,6 +1839,7 @@ func (h *LibraryHandler) identifyLibraryJob(
 
 func (h *LibraryHandler) identifyShowFallbackGroup(
 	ctx context.Context,
+	libraryPath string,
 	queries []string,
 	rows []db.IdentificationRow,
 	cache *episodicIdentifyCache,
@@ -1765,29 +1848,12 @@ func (h *LibraryHandler) identifyShowFallbackGroup(
 	if h.SeriesQuery == nil || len(rows) == 0 {
 		return 0, nil
 	}
-	var (
-		results []metadata.MatchResult
-		err     error
-	)
-	for _, query := range queries {
-		if cache != nil {
-			results, err = cache.SearchTV(ctx, query)
-		} else {
-			results, err = h.SeriesQuery.SearchTV(ctx, query)
-		}
-		if err != nil {
-			return 0, err
-		}
-		if len(results) > 0 {
-			break
-		}
-	}
-	if len(results) == 0 {
-		return 0, nil
-	}
-	tmdbID, err := strconv.Atoi(results[0].ExternalID)
-	if err != nil || tmdbID <= 0 {
+	selection, err := h.selectTMDBSeriesFallback(ctx, libraryPath, rows[0], queries, cache)
+	if err != nil {
 		return 0, err
+	}
+	if selection.tmdbID <= 0 {
+		return 0, nil
 	}
 	refs := make([]db.ShowEpisodeRef, 0, len(rows))
 	for _, row := range rows {
@@ -1798,7 +1864,15 @@ func (h *LibraryHandler) identifyShowFallbackGroup(
 			Episode: row.Episode,
 		})
 	}
-	updatedRefIDs, err := h.applySeriesToRefs(ctx, tmdbID, refs, true, false, cache, queueSearch)
+	updatedRefIDs, err := h.applySeriesToRefs(
+		ctx,
+		selection.tmdbID,
+		refs,
+		selection.metadataReviewNeeded,
+		false,
+		cache,
+		queueSearch,
+	)
 	return len(updatedRefIDs), err
 }
 
