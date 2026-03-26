@@ -177,12 +177,38 @@ export const PlaybackSessionStatusSchema = Schema.Literals([
   "closed",
 ]);
 
+export type PlaybackDelivery = "direct" | "remux" | "transcode";
+
+export const PlaybackDeliverySchema = Schema.Literals([
+  "direct",
+  "remux",
+  "transcode",
+]);
+
+export interface ClientPlaybackCapabilities {
+  supportsNativeHls: boolean;
+  supportsMseHls: boolean;
+  videoCodecs: string[];
+  audioCodecs: string[];
+  containers: string[];
+}
+
+export const ClientPlaybackCapabilitiesSchema = Schema.Struct({
+  supportsNativeHls: Schema.Boolean,
+  supportsMseHls: Schema.Boolean,
+  videoCodecs: Schema.Array(Schema.String),
+  audioCodecs: Schema.Array(Schema.String),
+  containers: Schema.Array(Schema.String),
+});
+
 export interface CreatePlaybackSessionPayload {
   audioIndex?: number;
+  clientCapabilities?: ClientPlaybackCapabilities;
 }
 
 export const CreatePlaybackSessionPayloadSchema = Schema.Struct({
   audioIndex: Schema.optional(Schema.Number),
+  clientCapabilities: Schema.optional(ClientPlaybackCapabilitiesSchema),
 });
 
 export interface UpdatePlaybackSessionAudioPayload {
@@ -193,25 +219,52 @@ export const UpdatePlaybackSessionAudioPayloadSchema = Schema.Struct({
   audioIndex: Schema.Number,
 });
 
-export interface PlaybackSession {
+export interface DirectPlaybackSession {
+  delivery: "direct";
+  mediaId: number;
+  audioIndex?: number;
+  status: PlaybackSessionStatus;
+  streamUrl: string;
+  error?: string;
+}
+
+export interface HlsPlaybackSession {
   sessionId: string;
+  delivery: "remux" | "transcode";
   mediaId: number;
   revision: number;
   audioIndex: number;
   status: PlaybackSessionStatus;
-  playlistPath: string;
+  streamUrl: string;
   error?: string;
 }
 
-export const PlaybackSessionSchema = Schema.Struct({
+export type PlaybackSession = DirectPlaybackSession | HlsPlaybackSession;
+
+export const DirectPlaybackSessionSchema = Schema.Struct({
+  delivery: Schema.Literal("direct"),
+  mediaId: Schema.Number,
+  audioIndex: Schema.optional(Schema.Number),
+  status: PlaybackSessionStatusSchema,
+  streamUrl: Schema.String,
+  error: Schema.optional(Schema.String),
+});
+
+export const HlsPlaybackSessionSchema = Schema.Struct({
   sessionId: Schema.String,
+  delivery: Schema.Literals(["remux", "transcode"]),
   mediaId: Schema.Number,
   revision: Schema.Number,
   audioIndex: Schema.Number,
   status: PlaybackSessionStatusSchema,
-  playlistPath: Schema.String,
+  streamUrl: Schema.String,
   error: Schema.optional(Schema.String),
 });
+
+export const PlaybackSessionSchema = Schema.Union([
+  DirectPlaybackSessionSchema,
+  HlsPlaybackSessionSchema,
+]);
 
 export interface ContinueWatchingEntry {
   kind: "movie" | "show";
@@ -958,11 +1011,12 @@ export interface DetachPlaybackSessionCommand {
 export interface PlaybackSessionUpdateEvent {
   type: "playback_session_update";
   sessionId: string;
+  delivery: "remux" | "transcode";
   mediaId: number;
   revision: number;
   audioIndex: number;
   status: PlaybackSessionStatus;
-  playlistPath: string;
+  streamUrl: string;
   error?: string;
 }
 
@@ -1001,11 +1055,12 @@ export const DetachPlaybackSessionCommandSchema = Schema.Struct({
 export const PlaybackSessionUpdateEventSchema = Schema.Struct({
   type: Schema.Literal("playback_session_update"),
   sessionId: Schema.String,
+  delivery: Schema.Literals(["remux", "transcode"]),
   mediaId: Schema.Number,
   revision: Schema.Number,
   audioIndex: Schema.Number,
   status: PlaybackSessionStatusSchema,
-  playlistPath: Schema.String,
+  streamUrl: Schema.String,
   error: Schema.optional(Schema.String),
 });
 

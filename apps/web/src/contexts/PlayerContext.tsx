@@ -8,10 +8,8 @@ import {
   useState,
   type ReactNode,
 } from "react";
-import { playbackSessionPlaylistUrl } from "@plum/shared";
 import type { MediaItem, PlaybackSession as ApiPlaybackSession } from "../api";
 import {
-  BASE_URL,
   type PlumWebSocketCommand,
   closePlaybackSession,
   createPlaybackSession,
@@ -24,6 +22,7 @@ import {
   preferredInitialAudioIndex,
   shuffleQueue,
 } from "../lib/playback/playerQueue";
+import { detectClientPlaybackCapabilities } from "../lib/playback/playerMedia";
 import { sortMusicTracks } from "../lib/musicGrouping";
 import { sortEpisodes } from "../lib/showGrouping";
 import { useLibraries } from "../queries";
@@ -45,15 +44,48 @@ export type PlaybackSession = {
 };
 
 type VideoSessionState = {
-  sessionId: string;
+  delivery: ApiPlaybackSession["delivery"];
+  sessionId: string | null;
   mediaId: number;
   desiredRevision: number;
   currentRevision: number;
   audioIndex: number;
   status: "starting" | "ready" | "error" | "closed";
-  playlistPath: string;
+  streamUrl: string;
   error: string;
 };
+
+function toVideoSessionState(session: ApiPlaybackSession): VideoSessionState {
+  if (session.delivery === "direct") {
+    return {
+      delivery: session.delivery,
+      sessionId: null,
+      mediaId: session.mediaId,
+      desiredRevision: 0,
+      currentRevision: 0,
+      audioIndex: session.audioIndex ?? -1,
+      status: session.status,
+      streamUrl: session.streamUrl,
+      error: session.error ?? "",
+    };
+  }
+
+  return {
+    delivery: session.delivery,
+    sessionId: session.sessionId,
+    mediaId: session.mediaId,
+    desiredRevision: session.revision,
+    currentRevision: session.status === "ready" ? session.revision : 0,
+    audioIndex: session.audioIndex,
+    status: session.status,
+    streamUrl: session.streamUrl,
+    error: session.error ?? "",
+  };
+}
+
+function playbackStatusMessage(status: VideoSessionState["status"]): string {
+  return status === "ready" ? "Stream ready" : "Preparing stream...";
+}
 
 type PlayerContextValue = {
   playbackSession: PlaybackSession | null;
@@ -133,14 +165,8 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
   videoSessionRef.current = videoSession;
 
   const videoSourceUrl =
-    activeMode === "video" &&
-    videoSession != null &&
-    videoSession.currentRevision > 0
-      ? playbackSessionPlaylistUrl(
-          BASE_URL,
-          videoSession.sessionId,
-          videoSession.currentRevision,
-        )
+    activeMode === "video" && videoSession?.status === "ready"
+      ? videoSession.streamUrl
       : "";
 
   const sendPlaybackCommand = useCallback(
@@ -160,20 +186,19 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
   );
 
   const applyPlaybackSession = useCallback((session: ApiPlaybackSession) => {
-    setVideoSession({
-      sessionId: session.sessionId,
-      mediaId: session.mediaId,
-      desiredRevision: session.revision,
-      currentRevision: session.status === "ready" ? session.revision : 0,
-      audioIndex: session.audioIndex,
-      status: session.status,
-      playlistPath: session.playlistPath,
-      error: session.error ?? "",
-    });
-    setLastEvent(
-      session.status === "ready" ? "Stream ready" : "Preparing stream...",
-    );
+    const nextSession = toVideoSessionState(session);
+    setVideoSession(nextSession);
+    setLastEvent(playbackStatusMessage(nextSession.status));
   }, []);
+
+  const createClientPlaybackSession = useCallback(
+    (item: MediaItem, audioIndex: number) =>
+      createPlaybackSession(item.id, {
+        audioIndex,
+        clientCapabilities: detectClientPlaybackCapabilities(),
+      }),
+    [],
+  );
 
   useEffect(() => {
     if (!wsConnected) return;
@@ -267,12 +292,10 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
       const preferredAudioLanguage = resolveLibraryPlaybackPreferences(
         activeLibrary ?? { type: nextItem.type },
       ).preferredAudioLanguage;
-      createPlaybackSession(nextItem.id, {
-        audioIndex: preferredInitialAudioIndex(
-          nextItem,
-          preferredAudioLanguage,
-        ),
-      })
+      createClientPlaybackSession(
+        nextItem,
+        preferredInitialAudioIndex(nextItem, preferredAudioLanguage),
+      )
         .then((session) => {
           if (!mountedRef.current) return;
           applyPlaybackSession(session);
@@ -284,28 +307,48 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
           );
         });
     },
-    [applyPlaybackSession, closeVideoSession, libraries, pauseAllMediaElements],
+    [
+      applyPlaybackSession,
+      closeVideoSession,
+      createClientPlaybackSession,
+      libraries,
+      pauseAllMediaElements,
+    ],
   );
 
   const changeAudioTrack = useCallback(
     async (audioIndex: number) => {
       const session = videoSessionRef.current;
-      if (activeMode !== "video" || !activeItem || !session) return;
+      if (activeMode !== "video" || !activeItem) return;
       setLastEvent("Switching audio track...");
       try {
-        const nextSession = await updatePlaybackSessionAudio(
-          session.sessionId,
-          { audioIndex },
-        );
+        if (!session?.sessionId) {
+          const nextSession = await createClientPlaybackSession(
+            activeItem,
+            audioIndex,
+          );
+          applyPlaybackSession(nextSession);
+          return;
+        }
+
+        const nextSession = await updatePlaybackSessionAudio(session.sessionId, {
+          audioIndex,
+        });
+        if (nextSession.delivery === "direct") {
+          applyPlaybackSession(nextSession);
+          return;
+        }
+
         setVideoSession((current) =>
-          current == null || current.sessionId !== nextSession.sessionId
+          current == null || current.sessionId !== session.sessionId
             ? current
             : {
                 ...current,
+                delivery: nextSession.delivery,
                 desiredRevision: nextSession.revision,
                 audioIndex: nextSession.audioIndex,
                 status: nextSession.status,
-                playlistPath: nextSession.playlistPath,
+                streamUrl: nextSession.streamUrl,
                 error: nextSession.error ?? "",
               },
         );
@@ -316,7 +359,7 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
         );
       }
     },
-    [activeItem, activeMode],
+    [activeItem, activeMode, applyPlaybackSession, createClientPlaybackSession],
   );
 
   const playMovie = useCallback(
@@ -567,9 +610,10 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
                 current.desiredRevision,
                 latestEvent.revision,
               ),
+              delivery: latestEvent.delivery,
               audioIndex: latestEvent.audioIndex,
               status: "ready",
-              playlistPath: latestEvent.playlistPath,
+              streamUrl: latestEvent.streamUrl,
               error: latestEvent.error ?? "",
             },
       );

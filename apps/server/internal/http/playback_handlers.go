@@ -61,7 +61,8 @@ func (h *PlaybackHandler) CreateSession(w http.ResponseWriter, r *http.Request) 
 	}
 
 	var payload struct {
-		AudioIndex int `json:"audioIndex"`
+		AudioIndex          int                                 `json:"audioIndex"`
+		ClientCapabilities transcoder.ClientPlaybackCapabilities `json:"clientCapabilities"`
 	}
 	payload.AudioIndex = -1
 	if r.ContentLength != 0 {
@@ -71,7 +72,7 @@ func (h *PlaybackHandler) CreateSession(w http.ResponseWriter, r *http.Request) 
 		}
 	}
 
-	state, err := h.Sessions.Create(*media, settings, payload.AudioIndex, user.ID)
+	state, err := h.Sessions.Create(*media, settings, payload.AudioIndex, user.ID, payload.ClientCapabilities)
 	if err != nil {
 		http.Error(w, "internal error", http.StatusInternalServerError)
 		return

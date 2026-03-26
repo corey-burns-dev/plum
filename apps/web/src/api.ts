@@ -2,6 +2,7 @@ import { createPlumApiClient, ensureBaseUrl } from "@plum/shared";
 
 export type {
   AttachPlaybackSessionCommand,
+  ClientPlaybackCapabilities,
   CreateLibraryPayload,
   CredentialsPayload,
   CreatePlaybackSessionPayload,
@@ -26,6 +27,7 @@ export type {
   MatchStatus,
   MediaItem,
   PlumWebSocketCommand,
+  PlaybackDelivery,
   PlaybackSession,
   PlumWebSocketEvent,
   SearchResponse,

@@ -43,7 +43,7 @@ func TestRunRevisionFallsBackToSoftwareBeforeReady(t *testing.T) {
 		ffmpegCommandContext = previousCommandContext
 	})
 
-	if _, err := manager.startRevision(session, settings, -1); err != nil {
+	if _, err := manager.startRevision(session, settings, -1, playbackDecision{Delivery: "transcode"}); err != nil {
 		t.Fatalf("startRevision: %v", err)
 	}
 
@@ -85,7 +85,7 @@ func TestRunRevisionMarksErrorAfterAllPlansFail(t *testing.T) {
 		ffmpegCommandContext = previousCommandContext
 	})
 
-	if _, err := manager.startRevision(session, settings, -1); err != nil {
+	if _, err := manager.startRevision(session, settings, -1, playbackDecision{Delivery: "transcode"}); err != nil {
 		t.Fatalf("startRevision: %v", err)
 	}
 
@@ -361,23 +361,44 @@ func hlsArgsUseHardware(args []string) bool {
 func fakeHLSCommand(ctx context.Context, args []string, exitCode string) *exec.Cmd {
 	playlistPath := args[len(args)-1]
 	segmentTemplate := ""
+	masterPlaylistName := ""
 	for index := 0; index < len(args)-1; index += 1 {
 		if args[index] == "-hls_segment_filename" && index+1 < len(args) {
 			segmentTemplate = args[index+1]
-			break
+		}
+		if args[index] == "-master_pl_name" && index+1 < len(args) {
+			masterPlaylistName = args[index+1]
 		}
 	}
 
 	script := `
 playlist_path="$1"
 segment_template="$2"
-exit_code="$3"
-mkdir -p "$(dirname "$playlist_path")"
-printf '#EXTM3U\n' > "$playlist_path"
-segment_path="${segment_template//%05d/00000}"
+master_playlist_name="$3"
+exit_code="$4"
+resolved_playlist_path="${playlist_path//%v/0}"
+resolved_segment_template="${segment_template//%v/0}"
+mkdir -p "$(dirname "$resolved_playlist_path")"
+printf '#EXTM3U\n' > "$resolved_playlist_path"
+if [ -n "$master_playlist_name" ]; then
+  out_dir="$(dirname "$(dirname "$resolved_playlist_path")")"
+  printf '#EXTM3U\n' > "$out_dir/$master_playlist_name"
+fi
+segment_path="${resolved_segment_template//%05d/00000}"
+mkdir -p "$(dirname "$segment_path")"
 printf 'segment' > "$segment_path"
 exit "$exit_code"
 `
 
-	return exec.CommandContext(ctx, "bash", "-lc", script, "bash", playlistPath, segmentTemplate, exitCode)
+	return exec.CommandContext(
+		ctx,
+		"bash",
+		"-lc",
+		script,
+		"bash",
+		playlistPath,
+		segmentTemplate,
+		masterPlaylistName,
+		exitCode,
+	)
 }

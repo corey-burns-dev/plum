@@ -11,6 +11,7 @@ const backendUrl =
   "http://localhost:8080";
 
 export default defineConfig({
+  cacheDir: ".vite",
   plugins: [react(), tailwindcss()],
   resolve: {
     alias: { "@": path.resolve(__dirname, "./src") },

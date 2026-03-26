@@ -2,7 +2,6 @@ package transcoder
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"os"
 	"os/exec"
@@ -415,34 +414,11 @@ func probeVideoStream(path string) videoStreamInfo {
 	if _, err := exec.LookPath("ffprobe"); err != nil {
 		return videoStreamInfo{}
 	}
-
-	cmd := exec.Command(
-		"ffprobe",
-		"-v", "error",
-		"-select_streams", "v:0",
-		"-show_entries", "stream=codec_name,pix_fmt",
-		"-of", "json",
-		path,
-	)
-	out, err := cmd.Output()
+	probe, err := probePlaybackSource(context.Background(), path)
 	if err != nil {
 		return videoStreamInfo{}
 	}
-
-	var payload struct {
-		Streams []struct {
-			CodecName string `json:"codec_name"`
-			PixelFmt  string `json:"pix_fmt"`
-		} `json:"streams"`
-	}
-	if err := json.Unmarshal(out, &payload); err != nil || len(payload.Streams) == 0 {
-		return videoStreamInfo{}
-	}
-
-	return videoStreamInfo{
-		CodecName: payload.Streams[0].CodecName,
-		PixelFmt:  payload.Streams[0].PixelFmt,
-	}
+	return probe.videoStreamInfo()
 }
 
 func ffmpegCommandContains(ctx context.Context, arg string, needle string) bool {

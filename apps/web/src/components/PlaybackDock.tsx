@@ -343,6 +343,10 @@ export function PlaybackDock() {
     hlsStatusMessage ||
     lastEvent ||
     (wsConnected ? "Waiting for transcode updates" : "WebSocket disconnected");
+  const videoSourceIsHls = useMemo(
+    () => /\.m3u8(?:$|\?)/i.test(videoSourceUrl),
+    [videoSourceUrl],
+  );
   const activeLibrary = useMemo(
     () => libraries.find((library) => library.id === activeItem?.library_id) ?? null,
     [activeItem?.library_id, libraries],
@@ -987,7 +991,7 @@ export function PlaybackDock() {
       return;
     }
 
-    if (!Hls.isSupported()) {
+    if (!videoSourceIsHls || !Hls.isSupported()) {
       video.src = videoSourceUrl;
       return;
     }
@@ -1065,6 +1069,7 @@ export function PlaybackDock() {
     markSubtitleReady,
     maybeRecoverInitialBufferGap,
     videoAttachmentVersion,
+    videoSourceIsHls,
     videoSourceUrl,
   ]);
 

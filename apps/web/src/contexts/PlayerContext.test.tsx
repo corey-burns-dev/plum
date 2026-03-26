@@ -69,20 +69,22 @@ describe("PlayerContext playback session updates", () => {
     vi.spyOn(api, "listLibraries").mockResolvedValue([]);
     vi.spyOn(api, "createPlaybackSession").mockResolvedValue({
       sessionId: "session-99",
+      delivery: "transcode",
       mediaId: 99,
       revision: 1,
       audioIndex: -1,
       status: "starting",
-      playlistPath: "/api/playback/sessions/session-99/revisions/1/index.m3u8",
+      streamUrl: "/api/playback/sessions/session-99/revisions/1/index.m3u8",
     });
     vi.spyOn(api, "closePlaybackSession").mockResolvedValue();
     vi.spyOn(api, "updatePlaybackSessionAudio").mockResolvedValue({
       sessionId: "session-99",
+      delivery: "transcode",
       mediaId: 99,
       revision: 2,
       audioIndex: 1,
       status: "starting",
-      playlistPath: "/api/playback/sessions/session-99/revisions/2/index.m3u8",
+      streamUrl: "/api/playback/sessions/session-99/revisions/2/index.m3u8",
     });
     (globalThis.WebSocket as unknown as MockWebSocketClass).reset();
   });
@@ -121,9 +123,13 @@ describe("PlayerContext playback session updates", () => {
     fireEvent.click(screen.getByRole("button", { name: "Play" }));
 
     await waitFor(() => {
-      expect(api.createPlaybackSession).toHaveBeenCalledWith(99, {
-        audioIndex: -1,
-      });
+      expect(api.createPlaybackSession).toHaveBeenCalledWith(
+        99,
+        expect.objectContaining({
+          audioIndex: -1,
+          clientCapabilities: expect.any(Object),
+        }),
+      );
       expect(screen.getByTestId("active-media-id")).toHaveTextContent("99");
       expect(screen.getByTestId("last-event")).toHaveTextContent(
         "Preparing stream...",
@@ -141,11 +147,12 @@ describe("PlayerContext playback session updates", () => {
         JSON.stringify({
           type: "playback_session_update",
           sessionId: "session-22",
+          delivery: "transcode",
           mediaId: 22,
           revision: 1,
           audioIndex: -1,
           status: "ready",
-          playlistPath:
+          streamUrl:
             "/api/playback/sessions/session-22/revisions/1/index.m3u8",
         }),
       );
@@ -158,11 +165,12 @@ describe("PlayerContext playback session updates", () => {
         JSON.stringify({
           type: "playback_session_update",
           sessionId: "session-99",
+          delivery: "transcode",
           mediaId: 99,
           revision: 1,
           audioIndex: -1,
           status: "ready",
-          playlistPath:
+          streamUrl:
             "/api/playback/sessions/session-99/revisions/1/index.m3u8",
         }),
       );

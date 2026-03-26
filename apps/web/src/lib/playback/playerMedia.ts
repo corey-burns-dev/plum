@@ -1,4 +1,5 @@
-import type { MediaItem } from "../../api";
+import Hls from "hls.js";
+import type { ClientPlaybackCapabilities, MediaItem } from "../../api";
 import { languageMatchesPreference, type SubtitleAppearance } from "../playbackPreferences";
 
 export type BrowserAudioTrack = {
@@ -38,6 +39,56 @@ export type AudioTrackOption = TrackMenuOption & {
   streamIndex: number;
   language: string;
 };
+
+function canPlay(element: HTMLVideoElement, value: string): boolean {
+  const result = element.canPlayType(value);
+  return result === "probably" || result === "maybe";
+}
+
+export function detectClientPlaybackCapabilities(): ClientPlaybackCapabilities {
+  if (typeof document === "undefined") {
+    return {
+      supportsNativeHls: false,
+      supportsMseHls: false,
+      videoCodecs: [],
+      audioCodecs: [],
+      containers: [],
+    };
+  }
+
+  const video = document.createElement("video");
+  const containers = [
+    canPlay(video, "video/mp4") ? "mp4" : null,
+    canPlay(video, "video/webm") ? "webm" : null,
+    canPlay(video, "video/ogg") ? "ogg" : null,
+  ].filter((value): value is string => value != null);
+
+  const videoCodecs = [
+    canPlay(video, 'video/mp4; codecs="avc1.42E01E"') ? "h264" : null,
+    canPlay(video, 'video/mp4; codecs="hvc1.1.6.L93.B0"') ? "hevc" : null,
+    canPlay(video, 'video/mp4; codecs="av01.0.05M.08"') ? "av1" : null,
+    canPlay(video, 'video/webm; codecs="vp9"') ? "vp9" : null,
+    canPlay(video, 'video/webm; codecs="vp8"') ? "vp8" : null,
+  ].filter((value): value is string => value != null);
+
+  const audioCodecs = [
+    canPlay(video, 'audio/mp4; codecs="mp4a.40.2"') ? "aac" : null,
+    canPlay(video, 'audio/mpeg; codecs="mp3"') ? "mp3" : null,
+    canPlay(video, 'audio/webm; codecs="opus"') ? "opus" : null,
+    canPlay(video, 'audio/webm; codecs="vorbis"') ? "vorbis" : null,
+    canPlay(video, 'audio/mp4; codecs="ac-3"') ? "ac3" : null,
+    canPlay(video, 'audio/mp4; codecs="ec-3"') ? "eac3" : null,
+    canPlay(video, 'audio/ogg; codecs="flac"') ? "flac" : null,
+  ].filter((value): value is string => value != null);
+
+  return {
+    supportsNativeHls: canPlay(video, "application/vnd.apple.mpegurl"),
+    supportsMseHls: Hls.isSupported(),
+    videoCodecs,
+    audioCodecs,
+    containers,
+  };
+}
 
 export function getBrowserAudioTracks(
   element: HTMLVideoElement | null,

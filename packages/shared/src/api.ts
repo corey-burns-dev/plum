@@ -1,5 +1,6 @@
 import type {
   AttachPlaybackSessionCommand,
+  ClientPlaybackCapabilities,
   CreateLibraryPayload,
   CredentialsPayload,
   CreatePlaybackSessionPayload,
@@ -25,6 +26,7 @@ import type {
   MediaItem,
   PlumWebSocketCommand,
   PlumWebSocketEvent,
+  PlaybackDelivery,
   PlaybackSession,
   SearchResponse,
   RecentlyAddedEntry,
@@ -83,6 +85,7 @@ import { buildBackendUrl, ensureBaseUrl } from "./backend";
 
 export type {
   AttachPlaybackSessionCommand,
+  ClientPlaybackCapabilities,
   CreateLibraryPayload,
   CredentialsPayload,
   CreatePlaybackSessionPayload,
@@ -108,6 +111,7 @@ export type {
   MediaItem,
   PlumWebSocketCommand,
   PlumWebSocketEvent,
+  PlaybackDelivery,
   PlaybackSession,
   SearchResponse,
   RecentlyAddedEntry,

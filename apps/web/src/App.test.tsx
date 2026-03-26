@@ -160,19 +160,21 @@ function mockDefaultAppApis() {
   vi.spyOn(api, "getDiscoverTitleDetails").mockResolvedValue(null);
   vi.spyOn(api, "createPlaybackSession").mockImplementation(async (mediaId, payload) => ({
     sessionId: `session-${mediaId}`,
+    delivery: "transcode",
     mediaId,
     revision: 1,
     audioIndex: payload?.audioIndex ?? -1,
     status: "starting",
-    playlistPath: `/api/playback/sessions/session-${mediaId}/revisions/1/index.m3u8`,
+    streamUrl: `/api/playback/sessions/session-${mediaId}/revisions/1/index.m3u8`,
   }));
   vi.spyOn(api, "updatePlaybackSessionAudio").mockImplementation(async (sessionId, payload) => ({
     sessionId,
+    delivery: "transcode",
     mediaId: Number(sessionId.replace("session-", "")) || 0,
     revision: 2,
     audioIndex: payload.audioIndex,
     status: "starting",
-    playlistPath: `/api/playback/sessions/${sessionId}/revisions/2/index.m3u8`,
+    streamUrl: `/api/playback/sessions/${sessionId}/revisions/2/index.m3u8`,
   }));
   vi.spyOn(api, "closePlaybackSession").mockResolvedValue();
 }
@@ -326,7 +328,13 @@ describe("App library and player wiring", () => {
     fireEvent.click(await screen.findByRole("button", { name: /^Play$/i }));
 
     await waitFor(() => {
-      expect(api.createPlaybackSession).toHaveBeenCalledWith(99, { audioIndex: -1 });
+      expect(api.createPlaybackSession).toHaveBeenCalledWith(
+        99,
+        expect.objectContaining({
+          audioIndex: -1,
+          clientCapabilities: expect.any(Object),
+        }),
+      );
     });
     expect(await screen.findByLabelText("Fullscreen video player")).toBeTruthy();
   });
@@ -352,7 +360,13 @@ describe("App library and player wiring", () => {
 
     fireEvent.click(await screen.findByRole("button", { name: /Play Die My Love/i }));
 
-    expect(api.createPlaybackSession).toHaveBeenCalledWith(99, { audioIndex: -1 });
+    expect(api.createPlaybackSession).toHaveBeenCalledWith(
+      99,
+      expect.objectContaining({
+        audioIndex: -1,
+        clientCapabilities: expect.any(Object),
+      }),
+    );
     expect(await screen.findByLabelText("Fullscreen video player")).toBeTruthy();
 
     fireEvent.click(screen.getAllByRole("button", { name: /Return to docked player/i })[0]!);
@@ -686,7 +700,13 @@ describe("App library and player wiring", () => {
     expect(await screen.findByRole("link", { name: /Back to library/i })).toBeTruthy();
     const playButton = await screen.findByRole("button", { name: /Play/i });
     fireEvent.click(playButton);
-    expect(api.createPlaybackSession).toHaveBeenCalledWith(42, { audioIndex: -1 });
+    expect(api.createPlaybackSession).toHaveBeenCalledWith(
+      42,
+      expect.objectContaining({
+        audioIndex: -1,
+        clientCapabilities: expect.any(Object),
+      }),
+    );
     expect(await screen.findByLabelText("Fullscreen video player")).toBeTruthy();
   });
 
@@ -723,7 +743,13 @@ describe("App library and player wiring", () => {
 
     fireEvent.click(await screen.findByRole("button", { name: /Play Grouped Show/i }));
 
-    expect(api.createPlaybackSession).toHaveBeenCalledWith(99, { audioIndex: -1 });
+    expect(api.createPlaybackSession).toHaveBeenCalledWith(
+      99,
+      expect.objectContaining({
+        audioIndex: -1,
+        clientCapabilities: expect.any(Object),
+      }),
+    );
     expect(await screen.findByLabelText("Fullscreen video player")).toBeTruthy();
   });
 

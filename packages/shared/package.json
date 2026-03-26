@@ -16,8 +16,8 @@
     "effect": "https://pkg.pr.new/Effect-TS/effect-smol/effect@4f969d1"
   },
   "devDependencies": {
-    "oxfmt": "^0.37.0",
-    "oxlint": "^1.52.0",
-    "typescript": "^5.7.3"
+    "oxfmt": "^0.42.0",
+    "oxlint": "^1.57.0",
+    "typescript": "^6.0.2"
   }
 }
